@@ -8,7 +8,7 @@ stream-friendly log output while keeping Compose's CLI behavior.
 - Works with `docker compose`, `docker-compose`, `podman compose`, and `podman-compose`
 - Opens a local log UI on `up` (can be disabled)
 - Colored, prefixed service logs with optional timestamps
-- Adds `--build` and `--remove-orphans` on `up` unless explicitly disabled
+- Adds `--build` on `up` and `--remove-orphans` on `up`/`down` unless explicitly disabled
 
 ## Install
 
@@ -46,10 +46,14 @@ The tool mirrors Compose subcommands. A compose file is required via `-f/--file`
 compose-ui --version
 compose-ui -f docker-compose.yml up
 compose-ui -f docker-compose.yml up -d
+compose-ui -f docker-compose.yml up --no-cache
+compose-ui -f docker-compose.yml up --force-recreate
 COMPOSE_FILE=docker-compose.yml compose-ui logs
 ```
 
 When running `up`, a log UI is started on a random local port and printed to stdout.
+Passing `--no-cache` to `up` runs a `compose build --no-cache` before starting containers.
+Passing `--force-recreate` to `up` forces containers to be recreated, and can be combined with `--no-cache`.
 `compose-ui --version` prints the build version, commit hash, and build date.
 
 ## Environment variables
@@ -62,7 +66,7 @@ When running `up`, a log UI is started on a random local port and printed to std
 - `COMPOSE_LOG_COLOR`: set to `0/false/no` to disable log colors
 - `COMPOSE_LOG_TIMESTAMPS`: set to `0/false/no` to disable log timestamps
 - `COMPOSE_DEFAULT_BUILD`: set to `0/false/no` to skip auto `--build` on `up`
-- `COMPOSE_DEFAULT_REMOVE_ORPHANS`: set to `0/false/no` to skip auto `--remove-orphans` on `up`
+- `COMPOSE_DEFAULT_REMOVE_ORPHANS`: set to `0/false/no` to skip auto `--remove-orphans` on `up`/`down`
 
 ## Development
 

@@ -469,7 +469,18 @@ impl ComposeRunner {
             eprintln!("Usage: {} <compose-subcommand> [args...]", BIN_NAME);
             return 2;
         }
-        let subcommand = self.compose_args[0].clone();
+        let subcommand = extract_subcommand(&self.compose_args)
+            .unwrap_or_else(|| self.compose_args[0].clone());
+        let mut no_cache_requested = false;
+        let mut force_recreate_requested = false;
+        if subcommand == "up" {
+            let (updated, requested) = take_flag(&self.compose_args, "--no-cache");
+            self.compose_args = updated;
+            no_cache_requested = requested;
+            let (updated, requested) = take_flag(&self.compose_args, "--force-recreate");
+            self.compose_args = updated;
+            force_recreate_requested = requested;
+        }
         if !has_project_name(&self.compose_args) {
             self.project_args = vec!["-p".to_string(), self.project_name.clone()];
         }
@@ -480,12 +491,23 @@ impl ComposeRunner {
         }
 
         if subcommand == "up" {
-            if !has_flag(&self.compose_args, &["--build"])
+            if !no_cache_requested
+                && !has_flag(&self.compose_args, &["--build"])
                 && !has_flag(&self.compose_args, &["--no-build"])
                 && !is_env_false("COMPOSE_DEFAULT_BUILD")
             {
                 self.compose_args.push("--build".to_string());
             }
+            if force_recreate_requested && !has_flag(&self.compose_args, &["--force-recreate"]) {
+                self.compose_args = insert_after(&self.compose_args, "up", "--force-recreate");
+            }
+            if !has_flag(&self.compose_args, &["--remove-orphans"])
+                && !is_env_false("COMPOSE_DEFAULT_REMOVE_ORPHANS")
+            {
+                self.compose_args.push("--remove-orphans".to_string());
+            }
+        }
+        if subcommand == "down" {
             if !has_flag(&self.compose_args, &["--remove-orphans"])
                 && !is_env_false("COMPOSE_DEFAULT_REMOVE_ORPHANS")
             {
@@ -531,6 +553,13 @@ impl ComposeRunner {
             let all_ids = self.collect_container_ids(Scope::All);
             if running_ids.is_empty() && !all_ids.is_empty() {
                 self.cleanup_project();
+            }
+        }
+
+        if subcommand == "up" && no_cache_requested {
+            let exit_code = self.run_compose(&["build".to_string(), "--no-cache".to_string()]);
+            if exit_code != 0 {
+                return exit_code;
             }
         }
 
@@ -1111,6 +1140,67 @@ fn has_flag(args: &[String], names: &[&str]) -> bool {
     false
 }
 
+fn extract_subcommand(args: &[String]) -> Option<String> {
+    let mut iter = args.iter().peekable();
+    while let Some(arg) = iter.next() {
+        if arg == "--" {
+            return iter.next().cloned();
+        }
+        if arg.starts_with('-') {
+            if arg.contains('=') {
+                continue;
+            }
+            if option_takes_value(arg) {
+                let _ = iter.next();
+            }
+            continue;
+        }
+        return Some(arg.clone());
+    }
+    None
+}
+
+fn option_takes_value(arg: &str) -> bool {
+    matches!(
+        arg,
+        "-f"
+            | "--file"
+            | "-p"
+            | "--project-name"
+            | "--project-directory"
+            | "--env-file"
+            | "--profile"
+            | "--ansi"
+            | "--progress"
+            | "--log-level"
+            | "-H"
+            | "--host"
+            | "--context"
+    )
+}
+
+fn take_flag(args: &[String], name: &str) -> (Vec<String>, bool) {
+    let mut updated = Vec::with_capacity(args.len());
+    let mut enabled = false;
+    let prefix = format!("{}=", name);
+    for arg in args {
+        if arg == name {
+            enabled = true;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix(&prefix) {
+            let value = value.to_lowercase();
+            if value == "0" || value == "false" || value == "no" {
+                continue;
+            }
+            enabled = true;
+            continue;
+        }
+        updated.push(arg.clone());
+    }
+    (updated, enabled)
+}
+
 fn extract_compose_file_arg(args: &[String]) -> Option<String> {
     let mut found = None;
     let mut iter = args.iter().peekable();
@@ -1548,22 +1638,7 @@ fn pid_alive(pid: i32) -> bool {
 }
 
 fn open_browser(url: &str) {
-    #[cfg(target_os = "macos")]
-    {
-        if command_exists("open") {
-            let _ = Command::new("open").arg(url).spawn();
-        }
-    }
-    #[cfg(target_os = "linux")]
-    {
-        if command_exists("xdg-open") {
-            let _ = Command::new("xdg-open").arg(url).spawn();
-        }
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let _ = Command::new("cmd").args(["/C", "start", "", url]).spawn();
-    }
+    let _ = webbrowser::open(url);
 }
 
 fn build_service_info(compose_file: &str) -> Vec<ServiceInfo> {
