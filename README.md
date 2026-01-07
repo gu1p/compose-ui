@@ -69,3 +69,7 @@ You may need to install the target first:
 ```bash
 rustup target add x86_64-unknown-linux-gnu
 ```
+
+## License
+
+MIT. See `LICENSE`.
