@@ -27,6 +27,20 @@ const panelsEl = document.getElementById("panels");
 const serviceListEl = document.getElementById("service-list");
 const addPanelBtn = document.getElementById("add-panel");
 const panelTemplate = document.getElementById("panel-template");
+const filterModal = document.getElementById("filter-modal");
+const filterModalTitle = document.getElementById("filter-modal-title");
+const filterModalSubtitle = document.getElementById("filter-modal-subtitle");
+const filterIncludeList = document.querySelector("[data-filter-list='include']");
+const filterExcludeList = document.querySelector("[data-filter-list='exclude']");
+const filterClearBtn = document.getElementById("filter-clear");
+const filterDoneBtn = document.getElementById("filter-done");
+
+const filterLists = {
+  include: filterIncludeList,
+  exclude: filterExcludeList,
+};
+
+let modalPanel = null;
 
 function colorFor(service) {
   if (!serviceColors.has(service)) {
@@ -76,7 +90,16 @@ function updatePanelMeta(panel) {
   } else if (panel.filter && panel.filter.size > 1) {
     label = `${panel.filter.size} SERVICES`;
   }
-  panel.metaEl.textContent = label;
+  const includeCount = panel.textFilters?.include?.length || 0;
+  const excludeCount = panel.textFilters?.exclude?.length || 0;
+  const parts = [label];
+  if (includeCount) {
+    parts.push(`+${includeCount} include`);
+  }
+  if (excludeCount) {
+    parts.push(`-${excludeCount} exclude`);
+  }
+  panel.metaEl.textContent = parts.join(" | ");
 }
 
 function updatePanelChips(panel) {
@@ -110,11 +133,114 @@ function createLogLine(entry) {
   return lineEl;
 }
 
+function normalizeFilterToken(value) {
+  if (!value) {
+    return "";
+  }
+  return value.trim().toLowerCase();
+}
+
+function readFilterList(listEl) {
+  if (!listEl) {
+    return [];
+  }
+  return [...listEl.querySelectorAll("input")]
+    .map((input) => normalizeFilterToken(input.value))
+    .filter(Boolean);
+}
+
+function createFilterRow(type, value = "") {
+  const row = document.createElement("div");
+  row.className = "filter-row";
+  row.dataset.filter = type;
+
+  const input = document.createElement("input");
+  input.className = "panel-text-input";
+  input.type = "text";
+  input.placeholder = type === "include" ? "error" : "healthcheck";
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  input.setAttribute("aria-label", type === "include" ? "Include filter" : "Exclude filter");
+  input.value = value;
+
+  const removeBtn = document.createElement("button");
+  removeBtn.type = "button";
+  removeBtn.className = "chip chip-small chip-ghost remove-filter";
+  removeBtn.textContent = "x";
+  removeBtn.setAttribute("aria-label", "Remove filter");
+  removeBtn.title = "Remove filter";
+
+  row.appendChild(input);
+  row.appendChild(removeBtn);
+  return row;
+}
+
+function renderFilterList(type, values) {
+  const listEl = filterLists[type];
+  listEl.innerHTML = "";
+  values.forEach((value) => {
+    listEl.appendChild(createFilterRow(type, value));
+  });
+  if (!listEl.children.length) {
+    listEl.appendChild(createFilterRow(type));
+  }
+}
+
+function entryMatchesPanel(panel, entry) {
+  if (panel.filter && !panel.filter.has(entry.service)) {
+    return false;
+  }
+  const includeTokens = panel.textFilters?.include || [];
+  const excludeTokens = panel.textFilters?.exclude || [];
+  if (includeTokens.length === 0 && excludeTokens.length === 0) {
+    return true;
+  }
+  const normalizedLine = String(entry.line).toLowerCase();
+  if (includeTokens.length && !includeTokens.some((token) => normalizedLine.includes(token))) {
+    return false;
+  }
+  if (excludeTokens.length && excludeTokens.some((token) => normalizedLine.includes(token))) {
+    return false;
+  }
+  return true;
+}
+
+function syncPanelFiltersFromModal() {
+  if (!modalPanel) {
+    return;
+  }
+  modalPanel.textFilters.include = readFilterList(filterIncludeList);
+  modalPanel.textFilters.exclude = readFilterList(filterExcludeList);
+  updatePanelMeta(modalPanel);
+  filterModalSubtitle.textContent = modalPanel.metaEl.textContent;
+  renderPanelLogs(modalPanel);
+}
+
+function openFilterModal(panel) {
+  modalPanel = panel;
+  renderFilterList("include", panel.textFilters.include);
+  renderFilterList("exclude", panel.textFilters.exclude);
+  filterModalTitle.textContent = `${panel.titleEl.textContent} filters`;
+  filterModalSubtitle.textContent = panel.metaEl.textContent;
+  filterModal.classList.add("is-open");
+  filterModal.setAttribute("aria-hidden", "false");
+  const firstInput = filterIncludeList.querySelector("input");
+  if (firstInput) {
+    firstInput.focus();
+  }
+}
+
+function closeFilterModal() {
+  filterModal.classList.remove("is-open");
+  filterModal.setAttribute("aria-hidden", "true");
+  modalPanel = null;
+}
+
 function renderPanelLogs(panel) {
   panel.logEl.innerHTML = "";
   const fragment = document.createDocumentFragment();
   state.history.forEach((entry) => {
-    if (!panel.filter || panel.filter.has(entry.service)) {
+    if (entryMatchesPanel(panel, entry)) {
       fragment.appendChild(createLogLine(entry));
     }
   });
@@ -167,6 +293,7 @@ function createPanel() {
   const metaEl = panelEl.querySelector(".panel-meta");
   const filtersEl = panelEl.querySelector(".panel-filters");
   const logEl = panelEl.querySelector(".log-view");
+  const filterBtn = panelEl.querySelector(".toggle-filter");
   const followBtn = panelEl.querySelector(".toggle-follow");
   const closeBtn = panelEl.querySelector(".remove-panel");
 
@@ -183,6 +310,10 @@ function createPanel() {
     metaEl,
     autoScroll: true,
     filter: null,
+    textFilters: {
+      include: [],
+      exclude: [],
+    },
     chipButtons: new Map(),
     allChip: null,
   };
@@ -197,6 +328,11 @@ function createPanel() {
     followBtn.textContent = panel.autoScroll ? "Follow" : "Paused";
     followBtn.classList.toggle("chip-muted", !panel.autoScroll);
     followBtn.classList.toggle("is-active", panel.autoScroll);
+  });
+
+  filterBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openFilterModal(panel);
   });
 
   closeBtn.addEventListener("click", (event) => {
@@ -312,7 +448,7 @@ function handleLogEvent(entry) {
     state.history.shift();
   }
   state.panels.forEach((panel) => {
-    if (!panel.filter || panel.filter.has(entry.service)) {
+    if (entryMatchesPanel(panel, entry)) {
       appendLogLine(panel, entry);
     }
   });
@@ -343,6 +479,76 @@ async function init() {
     console.error(error);
   }
 }
+
+filterClearBtn.addEventListener("click", () => {
+  renderFilterList("include", []);
+  renderFilterList("exclude", []);
+  syncPanelFiltersFromModal();
+  const firstInput = filterIncludeList.querySelector("input");
+  if (firstInput) {
+    firstInput.focus();
+  }
+});
+filterDoneBtn.addEventListener("click", () => closeFilterModal());
+filterModal.addEventListener("input", (event) => {
+  if (event.target.matches(".filter-row input")) {
+    syncPanelFiltersFromModal();
+  }
+});
+filterModal.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && event.target.matches(".filter-row input")) {
+    event.preventDefault();
+    const row = event.target.closest(".filter-row");
+    const type = row?.dataset.filter;
+    const listEl = type ? filterLists[type] : null;
+    if (listEl) {
+      const newRow = createFilterRow(type);
+      listEl.appendChild(newRow);
+      const input = newRow.querySelector("input");
+      if (input) {
+        input.focus();
+      }
+    }
+  }
+});
+filterModal.addEventListener("click", (event) => {
+  const closeTarget = event.target.closest("[data-modal-close]");
+  if (closeTarget) {
+    closeFilterModal();
+    return;
+  }
+  const addTarget = event.target.closest(".add-filter");
+  if (addTarget) {
+    const type = addTarget.dataset.filter;
+    const listEl = filterLists[type];
+    if (listEl) {
+      const row = createFilterRow(type);
+      listEl.appendChild(row);
+      const input = row.querySelector("input");
+      if (input) {
+        input.focus();
+      }
+    }
+    return;
+  }
+  const removeTarget = event.target.closest(".remove-filter");
+  if (removeTarget) {
+    const row = removeTarget.closest(".filter-row");
+    const type = row?.dataset.filter;
+    if (row) {
+      row.remove();
+    }
+    if (type && filterLists[type] && !filterLists[type].children.length) {
+      filterLists[type].appendChild(createFilterRow(type));
+    }
+    syncPanelFiltersFromModal();
+  }
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && filterModal.classList.contains("is-open")) {
+    closeFilterModal();
+  }
+});
 
 addPanelBtn.addEventListener("click", () => createPanel());
 

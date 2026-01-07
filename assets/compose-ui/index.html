@@ -37,6 +37,7 @@
             <div class="panel-meta"></div>
           </div>
           <div class="panel-actions">
+            <button class="chip toggle-filter" type="button">Filters</button>
             <button class="chip toggle-follow is-active" type="button">Follow</button>
             <button class="chip remove-panel" type="button">Close</button>
           </div>
@@ -45,6 +46,48 @@
         <div class="log-view"></div>
       </article>
     </template>
+
+    <div id="filter-modal" class="modal" aria-hidden="true">
+      <div class="modal-backdrop" data-modal-close></div>
+      <div
+        class="modal-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="filter-modal-title"
+      >
+        <div class="modal-header">
+          <div class="modal-heading">
+            <div class="modal-title" id="filter-modal-title">Panel filters</div>
+            <div class="modal-subtitle" id="filter-modal-subtitle"></div>
+          </div>
+          <button class="chip modal-close" type="button" data-modal-close>Close</button>
+        </div>
+        <div class="modal-filters">
+          <div class="filter-group" data-filter="include">
+            <div class="filter-group-head">
+              <span class="filter-label">Include</span>
+              <button class="chip chip-small add-filter" type="button" data-filter="include">
+                Add
+              </button>
+            </div>
+            <div class="filter-list" data-filter-list="include"></div>
+          </div>
+          <div class="filter-group" data-filter="exclude">
+            <div class="filter-group-head">
+              <span class="filter-label">Exclude</span>
+              <button class="chip chip-small add-filter" type="button" data-filter="exclude">
+                Add
+              </button>
+            </div>
+            <div class="filter-list" data-filter-list="exclude"></div>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button id="filter-clear" class="chip" type="button">Clear</button>
+          <button id="filter-done" class="chip is-active" type="button">Done</button>
+        </div>
+      </div>
+    </div>
 
     <script src="app.js"></script>
   </body>
