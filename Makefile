@@ -1,6 +1,6 @@
 .PHONY: build release test fmt clippy lint package install
 
-BIN_NAME ?= composeui
+BIN_NAME ?= compose-ui
 DIST_DIR ?= dist
 VERSION ?= $(shell awk -F '\"' '/^version =/ {print $$2; exit}' Cargo.toml)
 GIT_SHA ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
@@ -50,4 +50,4 @@ package: release
 	echo "Created $(DIST_DIR)/$$out_name";
 
 install:
-	sh ./get-composeui.sh
+	sh ./get-compose-ui.sh

@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 const HISTORY_LIMIT: usize = 2000;
 const CLIENT_QUEUE_SIZE: usize = 1000;
 const DEFAULT_PROJECT_NAME: &str = "compose";
-const BIN_NAME: &str = "composeui";
+const BIN_NAME: &str = "compose-ui";
 
 static INDEX_HTML: &str = include_str!("../assets/compose-ui/index.html");
 static APP_JS: &str = include_str!("../assets/compose-ui/app.js");

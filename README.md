@@ -1,6 +1,6 @@
-# composeui
+# compose-ui
 
-`composeui` is a small Rust wrapper around Docker/Podman Compose that adds a local log UI and
+`compose-ui` is a small Rust wrapper around Docker/Podman Compose that adds a local log UI and
 stream-friendly log output while keeping Compose's CLI behavior.
 
 ## Features
@@ -15,20 +15,20 @@ stream-friendly log output while keeping Compose's CLI behavior.
 ### Prebuilt (one line)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/gu1p/composer-ui-rs/main/get-composeui.sh | sh
+curl -fsSL https://raw.githubusercontent.com/gu1p/compose-ui/main/get-compose-ui.sh | sh
 ```
 
 Or with wget:
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/gu1p/composer-ui-rs/main/get-composeui.sh | sh
+wget -qO- https://raw.githubusercontent.com/gu1p/compose-ui/main/get-compose-ui.sh | sh
 ```
 
 Overrides:
 
-- `COMPOSEUI_VERSION=0.1.0` (default: latest)
-- `COMPOSEUI_INSTALL_DIR=~/.local/bin`
-- `COMPOSEUI_REPO=owner/repo`
+- `COMPOSE_UI_VERSION=0.1.0` (default: latest)
+- `COMPOSE_UI_INSTALL_DIR=~/.local/bin`
+- `COMPOSE_UI_REPO=owner/repo`
 
 ### From source
 
@@ -36,21 +36,21 @@ Overrides:
 cargo build --release
 ```
 
-Binary is at `target/release/composeui`.
+Binary is at `target/release/compose-ui`.
 
 ## Usage
 
 The tool mirrors Compose subcommands. A compose file is required via `-f/--file` or `COMPOSE_FILE`.
 
 ```bash
-composeui --version
-composeui -f docker-compose.yml up
-composeui -f docker-compose.yml up -d
-COMPOSE_FILE=docker-compose.yml composeui logs
+compose-ui --version
+compose-ui -f docker-compose.yml up
+compose-ui -f docker-compose.yml up -d
+COMPOSE_FILE=docker-compose.yml compose-ui logs
 ```
 
 When running `up`, a log UI is started on a random local port and printed to stdout.
-`composeui --version` prints the build version, commit hash, and build date.
+`compose-ui --version` prints the build version, commit hash, and build date.
 
 ## Environment variables
 
@@ -79,7 +79,7 @@ Package an artifact (uses the host target by default):
 make package
 ```
 
-Artifacts are written to `dist/` as `composeui-<version>-<target>`.
+Artifacts are written to `dist/` as `compose-ui-<version>-<target>`.
 
 To package a specific target:
 

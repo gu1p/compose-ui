@@ -1,20 +1,20 @@
 #!/usr/bin/env sh
 set -eu
 
-REPO="${COMPOSEUI_REPO:-gu1p/composer-ui-rs}"
-BIN_NAME="${COMPOSEUI_BIN:-composeui}"
-INSTALL_DIR="${COMPOSEUI_INSTALL_DIR:-}"
-VERSION="${COMPOSEUI_VERSION:-latest}"
+REPO="${COMPOSE_UI_REPO:-gu1p/compose-ui}"
+BIN_NAME="${COMPOSE_UI_BIN:-compose-ui}"
+INSTALL_DIR="${COMPOSE_UI_INSTALL_DIR:-}"
+VERSION="${COMPOSE_UI_VERSION:-latest}"
 
 usage() {
   cat <<EOF
-Usage: get-composeui.sh [--version <version>] [--repo <owner/repo>] [--install-dir <path>]
+Usage: get-compose-ui.sh [--version <version>] [--repo <owner/repo>] [--install-dir <path>]
 
 Environment overrides:
-  COMPOSEUI_REPO=owner/repo
-  COMPOSEUI_BIN=composeui
-  COMPOSEUI_INSTALL_DIR=~/.local/bin
-  COMPOSEUI_VERSION=latest
+  COMPOSE_UI_REPO=owner/repo
+  COMPOSE_UI_BIN=compose-ui
+  COMPOSE_UI_INSTALL_DIR=~/.local/bin
+  COMPOSE_UI_VERSION=latest
 EOF
 }
 
@@ -26,7 +26,7 @@ fail() {
 append_path() {
   file="$1"
   line="$2"
-  marker="# Added by composeui installer"
+  marker="# Added by compose-ui installer"
   if [ -f "$file" ] && grep -Fqs "$line" "$file"; then
     return 0
   fi
