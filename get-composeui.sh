@@ -23,6 +23,18 @@ fail() {
   exit 1
 }
 
+append_path() {
+  file="$1"
+  line="$2"
+  marker="# Added by composeui installer"
+  if [ -f "$file" ] && grep -Fqs "$line" "$file"; then
+    return 0
+  fi
+  if ! printf '\n%s\n%s\n' "$marker" "$line" >> "$file"; then
+    echo "warning: could not update $file" >&2
+  fi
+}
+
 fetch() {
   url="$1"
   out="$2"
@@ -50,8 +62,9 @@ latest_tag() {
       | tr -d '\r' \
       | awk -F/ '/[Ll]ocation:/ {print $NF; exit}'
     return
+  else
+    fail "curl or wget is required"
   fi
-  fail "curl or wget is required"
 }
 
 while [ $# -gt 0 ]; do
@@ -136,9 +149,15 @@ ln -sf "$install_path" "$INSTALL_DIR/$BIN_NAME"
 echo "Installed $install_path"
 echo "Symlinked $INSTALL_DIR/$BIN_NAME -> $install_path"
 
+path_line="export PATH=\"$INSTALL_DIR:\$PATH\""
 case ":$PATH:" in
-  *":$INSTALL_DIR:"*) ;;
+  *":$INSTALL_DIR:"*)
+    ;;
   *)
-    echo "Add to PATH: export PATH=\"$INSTALL_DIR:\$PATH\""
+    append_path "$HOME/.bashrc" "$path_line"
+    append_path "$HOME/.bash_profile" "$path_line"
+    append_path "$HOME/.zshrc" "$path_line"
+    echo "Updated shell profiles to add $INSTALL_DIR to PATH."
+    echo "Restart your shell or run: $path_line"
     ;;
 esac
