@@ -12,6 +12,7 @@ pub(crate) struct ServiceInfo {
 pub(crate) struct LogEvent {
     pub(crate) seq: u64,
     pub(crate) service: String,
+    pub(crate) container_ts: Option<String>,
     pub(crate) line: String,
 }
 

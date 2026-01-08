@@ -86,6 +86,7 @@ fn handle_connection(
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("");
     let path = parts.next().unwrap_or("/");
+    let path = path.split('?').next().unwrap_or(path);
 
     loop {
         let mut line = String::new();
@@ -179,10 +180,8 @@ fn write_event_stream(
     stream.flush()?;
 
     let (receiver, history) = log_hub.register_client();
-    for event in history {
-        if write_event(&mut stream, &event).is_err() {
-            return Ok(());
-        }
+    if write_history(&mut stream, &history).is_err() {
+        return Ok(());
     }
 
     while !stop_event.load(Ordering::SeqCst) {
@@ -201,6 +200,13 @@ fn write_event_stream(
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
         }
     }
+    Ok(())
+}
+
+fn write_history(stream: &mut TcpStream, events: &[LogEvent]) -> io::Result<()> {
+    let payload = serde_json::to_string(events).unwrap_or_default();
+    stream.write_all(format!("event: history\ndata: {}\n\n", payload).as_bytes())?;
+    stream.flush()?;
     Ok(())
 }
 

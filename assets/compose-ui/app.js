@@ -5,8 +5,14 @@ const state = {
   history: [],
 };
 
-const HISTORY_LIMIT = 2000;
-const MAX_LINES_PER_PANEL = 800;
+const HISTORY_LIMIT = 20000;
+const MAX_LINES_PER_PANEL = 8000;
+const URL_STATE_KEY = "panels";
+const URL_ACTIVE_KEY = "active";
+const URL_SYNC_DELAY = 200;
+const PANEL_SEPARATOR = "~";
+const GROUP_SEPARATOR = ";";
+const LIST_SEPARATOR = ",";
 
 const palette = [
   "#e07a5f",
@@ -22,14 +28,17 @@ const palette = [
 
 const serviceColors = new Map();
 let panelCounter = 0;
+let pendingUrlSync = null;
+let lastUrlSignature = "";
+let isRestoringState = false;
 
 const panelsEl = document.getElementById("panels");
 const serviceListEl = document.getElementById("service-list");
 const addPanelBtn = document.getElementById("add-panel");
 const panelTemplate = document.getElementById("panel-template");
-const filterModal = document.getElementById("filter-modal");
-const filterModalTitle = document.getElementById("filter-modal-title");
-const filterModalSubtitle = document.getElementById("filter-modal-subtitle");
+const filterDrawer = document.getElementById("filter-drawer");
+const filterDrawerTitle = document.getElementById("filter-drawer-title");
+const filterDrawerSubtitle = document.getElementById("filter-drawer-subtitle");
 const filterIncludeList = document.querySelector("[data-filter-list='include']");
 const filterExcludeList = document.querySelector("[data-filter-list='exclude']");
 const filterClearBtn = document.getElementById("filter-clear");
@@ -40,7 +49,7 @@ const filterLists = {
   exclude: filterExcludeList,
 };
 
-let modalPanel = null;
+let drawerPanel = null;
 
 function colorFor(service) {
   if (!serviceColors.has(service)) {
@@ -70,10 +79,14 @@ function endpointLabel(endpoint) {
 }
 
 function setActivePanel(panelId) {
+  const changed = state.activePanelId !== panelId;
   state.activePanelId = panelId;
   state.panels.forEach((panel) => {
     panel.el.classList.toggle("is-active", panel.id === panelId);
   });
+  if (changed) {
+    scheduleUrlSync();
+  }
 }
 
 function getActivePanel() {
@@ -115,6 +128,15 @@ function updatePanelChips(panel) {
   updatePanelMeta(panel);
 }
 
+function updateFollowState(panel) {
+  if (!panel.followBtn) {
+    return;
+  }
+  panel.followBtn.textContent = panel.autoScroll ? "Follow" : "Paused";
+  panel.followBtn.classList.toggle("chip-muted", !panel.autoScroll);
+  panel.followBtn.classList.toggle("is-active", panel.autoScroll);
+}
+
 function createLogLine(entry) {
   const lineEl = document.createElement("div");
   lineEl.className = "log-line";
@@ -124,11 +146,16 @@ function createLogLine(entry) {
   serviceEl.textContent = entry.service;
   serviceEl.style.setProperty("--chip-color", colorFor(entry.service));
 
+  const tsEl = document.createElement("span");
+  tsEl.className = "log-ts";
+  tsEl.textContent = entry.container_ts || "";
+
   const textEl = document.createElement("span");
   textEl.className = "log-text";
   textEl.textContent = entry.line;
 
   lineEl.appendChild(serviceEl);
+  lineEl.appendChild(tsEl);
   lineEl.appendChild(textEl);
   return lineEl;
 }
@@ -138,6 +165,44 @@ function normalizeFilterToken(value) {
     return "";
   }
   return value.trim().toLowerCase();
+}
+
+function normalizeServiceToken(value) {
+  if (!value) {
+    return "";
+  }
+  return value.trim();
+}
+
+function encodeToken(value) {
+  return encodeURIComponent(value).replace(/~/g, "%7E");
+}
+
+function decodeToken(value) {
+  if (!value) {
+    return "";
+  }
+  const sanitized = value.replace(/\+/g, " ");
+  try {
+    return decodeURIComponent(sanitized);
+  } catch (error) {
+    return sanitized;
+  }
+}
+
+function encodeTokenList(tokens) {
+  return tokens.map((token) => encodeToken(token)).join(LIST_SEPARATOR);
+}
+
+function decodeTokenList(value, normalizer = normalizeServiceToken) {
+  if (!value) {
+    return [];
+  }
+  return value
+    .split(LIST_SEPARATOR)
+    .map((token) => decodeToken(token))
+    .map((token) => normalizer(token))
+    .filter(Boolean);
 }
 
 function readFilterList(listEl) {
@@ -186,6 +251,231 @@ function renderFilterList(type, values) {
   }
 }
 
+function getRawQueryParam(name) {
+  const query = window.location.search.slice(1);
+  if (!query) {
+    return null;
+  }
+  const pairs = query.split("&");
+  for (const pair of pairs) {
+    if (!pair) {
+      continue;
+    }
+    const [key, ...rest] = pair.split("=");
+    if (key === name) {
+      return rest.join("=");
+    }
+  }
+  return null;
+}
+
+function serializePanelConfig(panel) {
+  const parts = [];
+  const services = panel.filter ? [...panel.filter] : [];
+  if (!panel.filter || services.length === 0) {
+    parts.push("svc=all");
+  } else {
+    parts.push(`svc=${encodeTokenList(services)}`);
+  }
+  const includeTokens = panel.textFilters?.include?.filter(Boolean) || [];
+  if (includeTokens.length) {
+    parts.push(`inc=${encodeTokenList(includeTokens)}`);
+  }
+  const excludeTokens = panel.textFilters?.exclude?.filter(Boolean) || [];
+  if (excludeTokens.length) {
+    parts.push(`exc=${encodeTokenList(excludeTokens)}`);
+  }
+  if (!panel.autoScroll) {
+    parts.push("follow=0");
+  }
+  return parts.join(GROUP_SEPARATOR);
+}
+
+function serializePanelsConfig(panels) {
+  if (!panels.length) {
+    return "";
+  }
+  return panels.map((panel) => serializePanelConfig(panel)).join(PANEL_SEPARATOR);
+}
+
+function parsePanelConfig(raw) {
+  const config = {
+    services: null,
+    include: [],
+    exclude: [],
+    follow: true,
+  };
+  if (!raw) {
+    return config;
+  }
+  raw.split(GROUP_SEPARATOR).forEach((part) => {
+    if (!part) {
+      return;
+    }
+    const [key, ...rest] = part.split("=");
+    const value = rest.join("=");
+    if (key === "svc") {
+      if (!value || value === "all") {
+        config.services = null;
+        return;
+      }
+      const services = decodeTokenList(value, normalizeServiceToken);
+      config.services = services.length ? services : null;
+      return;
+    }
+    if (key === "inc") {
+      config.include = decodeTokenList(value, normalizeFilterToken);
+      return;
+    }
+    if (key === "exc") {
+      config.exclude = decodeTokenList(value, normalizeFilterToken);
+      return;
+    }
+    if (key === "follow") {
+      config.follow = value !== "0";
+    }
+  });
+  return config;
+}
+
+function parsePanelsConfig(raw) {
+  if (!raw) {
+    return null;
+  }
+  return raw
+    .split(PANEL_SEPARATOR)
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => parsePanelConfig(entry));
+}
+
+function getActivePanelIndex() {
+  if (!state.activePanelId) {
+    return null;
+  }
+  const index = state.panels.findIndex((panel) => panel.id === state.activePanelId);
+  if (index < 0) {
+    return null;
+  }
+  return index;
+}
+
+function buildSearchString(panelsValue, activeIndex) {
+  const params = new URLSearchParams(window.location.search);
+  params.delete(URL_STATE_KEY);
+  params.delete(URL_ACTIVE_KEY);
+  const parts = [];
+  const base = params.toString();
+  if (base) {
+    parts.push(base);
+  }
+  if (panelsValue) {
+    parts.push(`${URL_STATE_KEY}=${panelsValue}`);
+  }
+  if (activeIndex !== null) {
+    parts.push(`${URL_ACTIVE_KEY}=${activeIndex + 1}`);
+  }
+  if (!parts.length) {
+    return "";
+  }
+  return `?${parts.join("&")}`;
+}
+
+function syncUrlWithState() {
+  if (isRestoringState) {
+    return;
+  }
+  const panelsValue = serializePanelsConfig(state.panels);
+  const activeIndex = getActivePanelIndex();
+  const nextSignature = `${panelsValue}|${activeIndex ?? ""}`;
+  if (nextSignature === lastUrlSignature) {
+    return;
+  }
+  lastUrlSignature = nextSignature;
+  const search = buildSearchString(panelsValue, activeIndex);
+  const nextUrl = `${window.location.pathname}${search}${window.location.hash}`;
+  window.history.replaceState(null, "", nextUrl);
+}
+
+function scheduleUrlSync() {
+  if (isRestoringState) {
+    return;
+  }
+  if (pendingUrlSync) {
+    clearTimeout(pendingUrlSync);
+  }
+  pendingUrlSync = setTimeout(() => {
+    pendingUrlSync = null;
+    syncUrlWithState();
+  }, URL_SYNC_DELAY);
+}
+
+function parseActiveIndex(rawValue, panelCount) {
+  if (!rawValue) {
+    return null;
+  }
+  const decoded = decodeToken(rawValue);
+  const parsed = Number.parseInt(decoded, 10);
+  if (Number.isNaN(parsed)) {
+    return null;
+  }
+  const index = parsed - 1;
+  if (index < 0) {
+    return null;
+  }
+  if (typeof panelCount === "number" && index >= panelCount) {
+    return null;
+  }
+  return index;
+}
+
+function readStateFromUrl() {
+  const rawPanels = getRawQueryParam(URL_STATE_KEY);
+  const rawActive = getRawQueryParam(URL_ACTIVE_KEY);
+  const panels = rawPanels ? parsePanelsConfig(rawPanels) : null;
+  const activeIndex = parseActiveIndex(rawActive, panels?.length);
+  return { panels, activeIndex };
+}
+
+function applyPanelConfig(panel, config) {
+  if (!panel || !config) {
+    return;
+  }
+  if (config.services && config.services.length) {
+    panel.filter = new Set(config.services);
+  } else {
+    panel.filter = null;
+  }
+  panel.textFilters.include = [...(config.include || [])];
+  panel.textFilters.exclude = [...(config.exclude || [])];
+  panel.autoScroll = config.follow !== false;
+  updatePanelChips(panel);
+  updateFollowState(panel);
+  renderPanelLogs(panel);
+}
+
+function restorePanelsFromUrl() {
+  const urlState = readStateFromUrl();
+  if (!urlState.panels || !urlState.panels.length) {
+    return false;
+  }
+  isRestoringState = true;
+  panelsEl.innerHTML = "";
+  state.panels = [];
+  state.activePanelId = null;
+  panelCounter = 0;
+  urlState.panels.forEach((config) => {
+    const panel = createPanel();
+    applyPanelConfig(panel, config);
+  });
+  if (urlState.activeIndex !== null && state.panels[urlState.activeIndex]) {
+    setActivePanel(state.panels[urlState.activeIndex].id);
+  }
+  isRestoringState = false;
+  scheduleUrlSync();
+  return true;
+}
+
 function entryMatchesPanel(panel, entry) {
   if (panel.filter && !panel.filter.has(entry.service)) {
     return false;
@@ -205,35 +495,38 @@ function entryMatchesPanel(panel, entry) {
   return true;
 }
 
-function syncPanelFiltersFromModal() {
-  if (!modalPanel) {
+function syncPanelFiltersFromDrawer() {
+  if (!drawerPanel) {
     return;
   }
-  modalPanel.textFilters.include = readFilterList(filterIncludeList);
-  modalPanel.textFilters.exclude = readFilterList(filterExcludeList);
-  updatePanelMeta(modalPanel);
-  filterModalSubtitle.textContent = modalPanel.metaEl.textContent;
-  renderPanelLogs(modalPanel);
+  drawerPanel.textFilters.include = readFilterList(filterIncludeList);
+  drawerPanel.textFilters.exclude = readFilterList(filterExcludeList);
+  updatePanelMeta(drawerPanel);
+  filterDrawerSubtitle.textContent = drawerPanel.metaEl.textContent;
+  renderPanelLogs(drawerPanel);
+  scheduleUrlSync();
 }
 
-function openFilterModal(panel) {
-  modalPanel = panel;
+function openFilterDrawer(panel) {
+  drawerPanel = panel;
   renderFilterList("include", panel.textFilters.include);
   renderFilterList("exclude", panel.textFilters.exclude);
-  filterModalTitle.textContent = `${panel.titleEl.textContent} filters`;
-  filterModalSubtitle.textContent = panel.metaEl.textContent;
-  filterModal.classList.add("is-open");
-  filterModal.setAttribute("aria-hidden", "false");
+  filterDrawerTitle.textContent = `${panel.titleEl.textContent} filters`;
+  filterDrawerSubtitle.textContent = panel.metaEl.textContent;
+  filterDrawer.classList.add("is-open");
+  filterDrawer.setAttribute("aria-hidden", "false");
+  document.body.classList.add("drawer-open");
   const firstInput = filterIncludeList.querySelector("input");
   if (firstInput) {
     firstInput.focus();
   }
 }
 
-function closeFilterModal() {
-  filterModal.classList.remove("is-open");
-  filterModal.setAttribute("aria-hidden", "true");
-  modalPanel = null;
+function closeFilterDrawer() {
+  filterDrawer.classList.remove("is-open");
+  filterDrawer.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("drawer-open");
+  drawerPanel = null;
 }
 
 function renderPanelLogs(panel) {
@@ -275,12 +568,14 @@ function toggleService(panel, serviceName) {
   }
   updatePanelChips(panel);
   renderPanelLogs(panel);
+  scheduleUrlSync();
 }
 
 function setAllServices(panel) {
   panel.filter = null;
   updatePanelChips(panel);
   renderPanelLogs(panel);
+  scheduleUrlSync();
 }
 
 function createPanel() {
@@ -308,6 +603,7 @@ function createPanel() {
     filtersEl,
     titleEl,
     metaEl,
+    followBtn,
     autoScroll: true,
     filter: null,
     textFilters: {
@@ -320,19 +616,18 @@ function createPanel() {
 
   panelEl.addEventListener("mousedown", () => setActivePanel(id));
 
-  followBtn.textContent = "Follow";
+  updateFollowState(panel);
 
   followBtn.addEventListener("click", (event) => {
     event.stopPropagation();
     panel.autoScroll = !panel.autoScroll;
-    followBtn.textContent = panel.autoScroll ? "Follow" : "Paused";
-    followBtn.classList.toggle("chip-muted", !panel.autoScroll);
-    followBtn.classList.toggle("is-active", panel.autoScroll);
+    updateFollowState(panel);
+    scheduleUrlSync();
   });
 
   filterBtn.addEventListener("click", (event) => {
     event.stopPropagation();
-    openFilterModal(panel);
+    openFilterDrawer(panel);
   });
 
   closeBtn.addEventListener("click", (event) => {
@@ -348,6 +643,7 @@ function createPanel() {
         setActivePanel(next.id);
       }
     }
+    scheduleUrlSync();
   });
 
   const allChip = document.createElement("button");
@@ -392,6 +688,7 @@ function createPanel() {
     setActivePanel(panel.id);
   }
 
+  scheduleUrlSync();
   return panel;
 }
 
@@ -409,6 +706,7 @@ function renderServiceList() {
       panel.filter = new Set([service.name]);
       updatePanelChips(panel);
       renderPanelLogs(panel);
+      scheduleUrlSync();
     });
 
     const dot = document.createElement("span");
@@ -456,6 +754,17 @@ function handleLogEvent(entry) {
 
 function startEventStream() {
   const stream = new EventSource("/events");
+  stream.addEventListener("history", (event) => {
+    try {
+      const entries = JSON.parse(event.data);
+      if (Array.isArray(entries)) {
+        state.history = entries.slice(-HISTORY_LIMIT);
+        state.panels.forEach((panel) => renderPanelLogs(panel));
+      }
+    } catch (error) {
+      console.error(error);
+    }
+  });
   stream.onmessage = (event) => {
     try {
       const entry = JSON.parse(event.data);
@@ -472,7 +781,9 @@ async function init() {
     const payload = await response.json();
     state.services = payload.services || [];
     renderServiceList();
-    createPanel();
+    if (!restorePanelsFromUrl()) {
+      createPanel();
+    }
     startEventStream();
   } catch (error) {
     serviceListEl.textContent = "Failed to load services.";
@@ -483,19 +794,19 @@ async function init() {
 filterClearBtn.addEventListener("click", () => {
   renderFilterList("include", []);
   renderFilterList("exclude", []);
-  syncPanelFiltersFromModal();
+  syncPanelFiltersFromDrawer();
   const firstInput = filterIncludeList.querySelector("input");
   if (firstInput) {
     firstInput.focus();
   }
 });
-filterDoneBtn.addEventListener("click", () => closeFilterModal());
-filterModal.addEventListener("input", (event) => {
+filterDoneBtn.addEventListener("click", () => closeFilterDrawer());
+filterDrawer.addEventListener("input", (event) => {
   if (event.target.matches(".filter-row input")) {
-    syncPanelFiltersFromModal();
+    syncPanelFiltersFromDrawer();
   }
 });
-filterModal.addEventListener("keydown", (event) => {
+filterDrawer.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && event.target.matches(".filter-row input")) {
     event.preventDefault();
     const row = event.target.closest(".filter-row");
@@ -511,10 +822,10 @@ filterModal.addEventListener("keydown", (event) => {
     }
   }
 });
-filterModal.addEventListener("click", (event) => {
-  const closeTarget = event.target.closest("[data-modal-close]");
+filterDrawer.addEventListener("click", (event) => {
+  const closeTarget = event.target.closest("[data-drawer-close]");
   if (closeTarget) {
-    closeFilterModal();
+    closeFilterDrawer();
     return;
   }
   const addTarget = event.target.closest(".add-filter");
@@ -541,12 +852,12 @@ filterModal.addEventListener("click", (event) => {
     if (type && filterLists[type] && !filterLists[type].children.length) {
       filterLists[type].appendChild(createFilterRow(type));
     }
-    syncPanelFiltersFromModal();
+    syncPanelFiltersFromDrawer();
   }
 });
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && filterModal.classList.contains("is-open")) {
-    closeFilterModal();
+  if (event.key === "Escape" && filterDrawer.classList.contains("is-open")) {
+    closeFilterDrawer();
   }
 });
 

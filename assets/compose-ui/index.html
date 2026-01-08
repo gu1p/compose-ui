@@ -47,22 +47,16 @@
       </article>
     </template>
 
-    <div id="filter-modal" class="modal" aria-hidden="true">
-      <div class="modal-backdrop" data-modal-close></div>
-      <div
-        class="modal-card"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="filter-modal-title"
-      >
-        <div class="modal-header">
-          <div class="modal-heading">
-            <div class="modal-title" id="filter-modal-title">Panel filters</div>
-            <div class="modal-subtitle" id="filter-modal-subtitle"></div>
+    <aside id="filter-drawer" class="drawer" aria-hidden="true">
+      <div class="drawer-card" role="dialog" aria-labelledby="filter-drawer-title">
+        <div class="drawer-header">
+          <div class="drawer-heading">
+            <div class="drawer-title" id="filter-drawer-title">Panel filters</div>
+            <div class="drawer-subtitle" id="filter-drawer-subtitle"></div>
           </div>
-          <button class="chip modal-close" type="button" data-modal-close>Close</button>
+          <button class="chip drawer-close" type="button" data-drawer-close>Close</button>
         </div>
-        <div class="modal-filters">
+        <div class="drawer-filters">
           <div class="filter-group" data-filter="include">
             <div class="filter-group-head">
               <span class="filter-label">Include</span>
@@ -82,12 +76,12 @@
             <div class="filter-list" data-filter-list="exclude"></div>
           </div>
         </div>
-        <div class="modal-actions">
+        <div class="drawer-actions">
           <button id="filter-clear" class="chip" type="button">Clear</button>
           <button id="filter-done" class="chip is-active" type="button">Done</button>
         </div>
       </div>
-    </div>
+    </aside>
 
     <script src="app.js"></script>
   </body>

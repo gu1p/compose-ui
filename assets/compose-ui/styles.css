@@ -12,6 +12,7 @@
   --shadow: 0 18px 45px rgba(31, 27, 22, 0.14);
   --mono: "Iosevka", "JetBrains Mono", "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   --ui: "Sora", "Avenir Next", "Futura", "Trebuchet MS", "Gill Sans", sans-serif;
+  --drawer-width: 360px;
 }
 
 * {
@@ -116,6 +117,10 @@ body::before {
   flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
+}
+
+body.drawer-open .layout {
+  margin-right: calc(min(var(--drawer-width), 92vw) + 24px);
 }
 
 .services {
@@ -401,31 +406,22 @@ body::before {
   box-shadow: 0 0 0 3px rgba(31, 27, 22, 0.12);
 }
 
-.modal {
+.drawer {
   position: fixed;
-  inset: 0;
+  top: 96px;
+  right: 24px;
+  bottom: 24px;
+  width: min(var(--drawer-width), 92vw);
   display: none;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-  z-index: 20;
+  z-index: 15;
 }
 
-.modal.is-open {
-  display: flex;
+.drawer.is-open {
+  display: block;
 }
 
-.modal-backdrop {
-  position: absolute;
-  inset: 0;
-  background: rgba(31, 27, 22, 0.45);
-  backdrop-filter: blur(6px);
-}
-
-.modal-card {
-  position: relative;
-  z-index: 1;
-  width: min(520px, 100%);
+.drawer-card {
+  height: 100%;
   background: var(--panel);
   border-radius: 20px;
   padding: 18px;
@@ -434,43 +430,47 @@ body::before {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  overflow: hidden;
 }
 
-.modal-header {
+.drawer-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
 }
 
-.modal-heading {
+.drawer-heading {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
-.modal-title {
+.drawer-title {
   font-weight: 700;
   font-size: 16px;
 }
 
-.modal-subtitle {
+.drawer-subtitle {
   font-size: 12px;
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 1px;
 }
 
-.modal-filters {
+.drawer-filters {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 12px;
+  overflow: auto;
+  padding-right: 4px;
 }
 
-.modal-actions {
+.drawer-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+  margin-top: auto;
 }
 
 .log-view {
@@ -488,7 +488,7 @@ body::before {
 
 .log-line {
   display: grid;
-  grid-template-columns: auto 1fr;
+  grid-template-columns: auto auto 1fr;
   gap: 10px;
   align-items: start;
   padding: 2px 0;
@@ -501,6 +501,12 @@ body::before {
   text-transform: uppercase;
   letter-spacing: 0.6px;
   font-size: 10px;
+  white-space: nowrap;
+}
+
+.log-ts {
+  font-size: 10px;
+  color: rgba(246, 241, 234, 0.55);
   white-space: nowrap;
 }
 
