@@ -18,12 +18,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Build UI
-        run: make -C assets/compose-ui dist
+        run: make -C assets/sanelens dist
       - name: Upload UI dist
         uses: actions/upload-artifact@v4
         with:
           name: ui-dist
-          path: assets/compose-ui/dist
+          path: assets/sanelens/dist
 
   build:
     name: Build (${{ matrix.target }})
@@ -46,7 +46,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: ui-dist
-          path: assets/compose-ui/dist
+          path: assets/sanelens/dist
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Cache
@@ -62,7 +62,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: compose-ui-${{ matrix.target }}
+          name: sanelens-${{ matrix.target }}
           path: dist/*
 
   release:
