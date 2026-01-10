@@ -6,6 +6,18 @@
   import { colorFor } from "../lib/colors";
   import type { PanelState, ServiceInfo } from "../lib/types";
 
+  type PanelCardProps = {
+    panel: PanelState;
+    services?: ServiceInfo[];
+    isActive?: boolean;
+    onActivate?: (id: string) => void;
+    onToggleFollow?: (panel: PanelState) => void;
+    onOpenFilters?: (panel: PanelState) => void;
+    onClose?: (panel: PanelState) => void;
+    onToggleService?: (panel: PanelState, name: string) => void;
+    onSelectAll?: (panel: PanelState) => void;
+  };
+
   let {
     panel,
     services = [],
@@ -16,17 +28,7 @@
     onClose = () => {},
     onToggleService = () => {},
     onSelectAll = () => {},
-  } = $props<{
-    panel: PanelState;
-    services?: ServiceInfo[];
-    isActive?: boolean;
-    onActivate?: (id: string) => void;
-    onToggleFollow?: (panel: PanelState) => void;
-    onOpenFilters?: (panel: PanelState) => void;
-    onClose?: (panel: PanelState) => void;
-    onToggleService?: (panel: PanelState, name: string) => void;
-    onSelectAll?: (panel: PanelState) => void;
-  }>();
+  }: PanelCardProps = $props();
 
   const meta = $derived.by(() => buildPanelMeta(panel));
 </script>
@@ -47,7 +49,7 @@
     <div class="flex items-center gap-2">
       <Chip
         size="sm"
-        onmousedown={(event) => event.stopPropagation()}
+        onmousedown={(event: MouseEvent) => event.stopPropagation()}
         onclick={() => onOpenFilters(panel)}
       >
         Filters
@@ -56,7 +58,7 @@
         size="sm"
         active={panel.autoScroll}
         muted={!panel.autoScroll}
-        onmousedown={(event) => event.stopPropagation()}
+        onmousedown={(event: MouseEvent) => event.stopPropagation()}
         onclick={() => onToggleFollow(panel)}
       >
         {panel.autoScroll ? "Follow" : "Paused"}
@@ -64,7 +66,7 @@
       <Chip
         size="sm"
         ghost
-        onmousedown={(event) => event.stopPropagation()}
+        onmousedown={(event: MouseEvent) => event.stopPropagation()}
         onclick={() => onClose(panel)}
       >
         Close

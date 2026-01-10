@@ -1,9 +1,16 @@
 <script lang="ts">
-  import type { ButtonHTMLAttributes } from "svelte/elements";
+  import type { Snippet } from "svelte";
+  import type { HTMLButtonAttributes } from "svelte/elements";
 
   export type ChipSize = "xs" | "sm";
 
-  type RenderFn = () => unknown;
+  type ChipProps = HTMLButtonAttributes & {
+    active?: boolean;
+    muted?: boolean;
+    ghost?: boolean;
+    size?: ChipSize;
+    children?: Snippet;
+  };
 
   let {
     active = false,
@@ -14,15 +21,7 @@
     class: className = "",
     children,
     ...rest
-  } = $props<{
-    active?: boolean;
-    muted?: boolean;
-    ghost?: boolean;
-    size?: ChipSize;
-    type?: ButtonHTMLAttributes["type"];
-    class?: string;
-    children?: RenderFn;
-  }>();
+  }: ChipProps = $props();
 
   const base =
     "inline-flex items-center gap-1 rounded-full border text-xs font-semibold transition duration-150 hover:-translate-y-0.5";

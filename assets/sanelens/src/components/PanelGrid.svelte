@@ -2,6 +2,18 @@
   import PanelCard from "./PanelCard.svelte";
   import type { PanelState, ServiceInfo } from "../lib/types";
 
+  type PanelGridProps = {
+    panels?: PanelState[];
+    services?: ServiceInfo[];
+    activePanelId?: string | null;
+    onActivate?: (id: string) => void;
+    onToggleFollow?: (panel: PanelState) => void;
+    onOpenFilters?: (panel: PanelState) => void;
+    onClose?: (panel: PanelState) => void;
+    onToggleService?: (panel: PanelState, name: string) => void;
+    onSelectAll?: (panel: PanelState) => void;
+  };
+
   let {
     panels = [],
     services = [],
@@ -12,17 +24,7 @@
     onClose = () => {},
     onToggleService = () => {},
     onSelectAll = () => {},
-  } = $props<{
-    panels?: PanelState[];
-    services?: ServiceInfo[];
-    activePanelId?: string | null;
-    onActivate?: (id: string) => void;
-    onToggleFollow?: (panel: PanelState) => void;
-    onOpenFilters?: (panel: PanelState) => void;
-    onClose?: (panel: PanelState) => void;
-    onToggleService?: (panel: PanelState, name: string) => void;
-    onSelectAll?: (panel: PanelState) => void;
-  }>();
+  }: PanelGridProps = $props();
 </script>
 
 <div

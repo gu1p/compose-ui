@@ -1,6 +1,13 @@
 <script lang="ts">
+  import type { HTMLAttributes } from "svelte/elements";
+
   export type Tone = "panel" | "muted";
-  type RenderFn = () => unknown;
+
+  type SurfaceProps = HTMLAttributes<HTMLElement> & {
+    tag?: keyof HTMLElementTagNameMap;
+    tone?: Tone;
+    padded?: boolean;
+  };
 
   let {
     tag = "div",
@@ -9,13 +16,7 @@
     class: className = "",
     children,
     ...rest
-  } = $props<{
-    tag?: keyof HTMLElementTagNameMap;
-    tone?: Tone;
-    padded?: boolean;
-    class?: string;
-    children?: RenderFn;
-  }>();
+  }: SurfaceProps = $props();
 
   const base = "rounded-2xl border border-ink/10 shadow-panel";
   const tones: Record<Tone, string> = {

@@ -1,14 +1,26 @@
 <script lang="ts">
   import { colorFor } from "../lib/colors";
   import type { LogEvent } from "../lib/types";
+  import type { Attachment } from "svelte/attachments";
 
-  let { logs = [], autoScroll = true } = $props<{
+  type LogViewProps = {
     logs?: LogEvent[];
     autoScroll?: boolean;
-  }>();
+  };
+
+  let { logs = [], autoScroll = true }: LogViewProps = $props();
 
   let container: HTMLDivElement | null = null;
   let lastCount = 0;
+
+  const attachContainer: Attachment<HTMLDivElement> = (node) => {
+    container = node;
+    return () => {
+      if (container === node) {
+        container = null;
+      }
+    };
+  };
 
   $effect(() => {
     if (!container) {
@@ -23,7 +35,7 @@
 
 <div
   class="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto rounded-xl bg-[#171411] p-3 font-mono text-xs text-[#f6f1ea] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)]"
-  bind:this={container}
+  {@attach attachContainer}
 >
   {#each logs as entry (entry.seq)}
     <div

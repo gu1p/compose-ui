@@ -3,6 +3,15 @@
   import TextInput from "../ui/TextInput.svelte";
   import type { InputTone } from "../ui/TextInput.svelte";
 
+  type FilterRowProps = {
+    value?: string;
+    placeholder?: string;
+    tone?: InputTone;
+    onInput?: (value: string) => void;
+    onRemove?: () => void;
+    onEnter?: () => void;
+  };
+
   let {
     value = "",
     placeholder = "",
@@ -10,14 +19,7 @@
     onInput = () => {},
     onRemove = () => {},
     onEnter = () => {},
-  } = $props<{
-    value?: string;
-    placeholder?: string;
-    tone?: InputTone;
-    onInput?: (value: string) => void;
-    onRemove?: () => void;
-    onEnter?: () => void;
-  }>();
+  }: FilterRowProps = $props();
 </script>
 
 <div class="grid grid-cols-[1fr_auto] items-center gap-2">

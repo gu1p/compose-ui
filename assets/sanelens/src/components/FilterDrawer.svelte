@@ -4,22 +4,44 @@
   import FilterRow from "./FilterRow.svelte";
   import { normalizeFilterToken } from "../lib/filters";
   import type { PanelState } from "../lib/types";
+  import type { Attachment } from "svelte/attachments";
 
   type FilterType = "include" | "exclude";
 
-  let { open = false, panel = null, meta = "", onClose = () => {}, onUpdate = () => {} } = $props<{
+  type FilterDrawerProps = {
     open?: boolean;
     panel?: PanelState | null;
     meta?: string;
     onClose?: () => void;
     onUpdate?: (include: string[], exclude: string[]) => void;
-  }>();
+  };
 
-  let includeDraft = $state<string[]>([""]);
-  let excludeDraft = $state<string[]>([""]);
+  let { open = false, panel = null, meta = "", onClose = () => {}, onUpdate = () => {} }:
+    FilterDrawerProps = $props();
+
+  let includeDraft: string[] = $state([""]);
+  let excludeDraft: string[] = $state([""]);
   let includeListEl: HTMLDivElement | null = null;
   let excludeListEl: HTMLDivElement | null = null;
   let lastPanelId: string | null = null;
+
+  const attachIncludeList: Attachment<HTMLDivElement> = (node) => {
+    includeListEl = node;
+    return () => {
+      if (includeListEl === node) {
+        includeListEl = null;
+      }
+    };
+  };
+
+  const attachExcludeList: Attachment<HTMLDivElement> = (node) => {
+    excludeListEl = node;
+    return () => {
+      if (excludeListEl === node) {
+        excludeListEl = null;
+      }
+    };
+  };
 
   $effect(() => {
     const nextId = panel?.id ?? null;
@@ -124,7 +146,7 @@
           <span class="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted">Include</span>
           <Chip size="xs" ghost onclick={() => addRow("include")}>Add</Chip>
         </div>
-        <div class="flex max-h-48 flex-col gap-2 overflow-y-auto pr-1" bind:this={includeListEl}>
+        <div class="flex max-h-48 flex-col gap-2 overflow-y-auto pr-1" {@attach attachIncludeList}>
           {#each includeDraft as value, index (index)}
             <FilterRow
               {value}
@@ -143,7 +165,7 @@
           <span class="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted">Exclude</span>
           <Chip size="xs" ghost onclick={() => addRow("exclude")}>Add</Chip>
         </div>
-        <div class="flex max-h-48 flex-col gap-2 overflow-y-auto pr-1" bind:this={excludeListEl}>
+        <div class="flex max-h-48 flex-col gap-2 overflow-y-auto pr-1" {@attach attachExcludeList}>
           {#each excludeDraft as value, index (index)}
             <FilterRow
               {value}

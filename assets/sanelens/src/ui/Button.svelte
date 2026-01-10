@@ -1,10 +1,15 @@
 <script lang="ts">
-  import type { ButtonHTMLAttributes } from "svelte/elements";
+  import type { Snippet } from "svelte";
+  import type { HTMLButtonAttributes } from "svelte/elements";
 
   export type ButtonVariant = "primary" | "surface" | "ghost";
   export type ButtonSize = "sm" | "md";
 
-  type RenderFn = () => unknown;
+  type ButtonProps = HTMLButtonAttributes & {
+    variant?: ButtonVariant;
+    size?: ButtonSize;
+    children?: Snippet;
+  };
 
   let {
     variant = "surface",
@@ -13,13 +18,7 @@
     class: className = "",
     children,
     ...rest
-  } = $props<{
-    variant?: ButtonVariant;
-    size?: ButtonSize;
-    type?: ButtonHTMLAttributes["type"];
-    class?: string;
-    children?: RenderFn;
-  }>();
+  }: ButtonProps = $props();
 
   const base =
     "inline-flex items-center justify-center rounded-full border text-sm font-semibold transition duration-150";

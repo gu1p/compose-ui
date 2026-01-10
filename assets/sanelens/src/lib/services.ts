@@ -14,7 +14,7 @@ export function endpointLabel(endpoint: string): string {
   try {
     const url = new URL(endpoint);
     return url.host;
-  } catch (error) {
+  } catch {
     return endpoint.replace("http://", "");
   }
 }

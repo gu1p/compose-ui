@@ -1,5 +1,20 @@
 <script lang="ts">
+  import type { HTMLInputAttributes } from "svelte/elements";
+
   export type InputTone = "include" | "exclude" | "neutral";
+
+  type TextInputProps = Omit<
+    HTMLInputAttributes,
+    "value" | "class" | "placeholder" | "aria-label"
+  > & {
+    value?: string;
+    placeholder?: string;
+    ariaLabel?: string;
+    tone?: InputTone;
+    class?: string;
+    onInput?: (value: string) => void;
+    onEnter?: () => void;
+  };
 
   let {
     value = "",
@@ -10,15 +25,7 @@
     onInput,
     onEnter,
     ...rest
-  } = $props<{
-    value?: string;
-    placeholder?: string;
-    ariaLabel?: string;
-    tone?: InputTone;
-    class?: string;
-    onInput?: (value: string) => void;
-    onEnter?: () => void;
-  }>();
+  }: TextInputProps = $props();
 
   const accents: Record<InputTone, string> = {
     include: "var(--accent-3)",

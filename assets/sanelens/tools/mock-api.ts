@@ -1,10 +1,11 @@
+import type { Connect, Plugin, ViteDevServer } from "vite";
 import type { LogEvent, ServiceInfo } from "../src/lib/types";
 
 const MOCK_HISTORY_LIMIT = 400;
 const MOCK_SEED_COUNT = 160;
 const MOCK_INTERVAL_MS = 900;
 
-export function mockApiPlugin() {
+export function mockApiPlugin(): Plugin {
   const services: ServiceInfo[] = [
     { name: "edge-gateway", endpoint: "https://api.sanelens.local" },
     { name: "auth-service", endpoint: "https://auth.sanelens.local" },
@@ -56,6 +57,16 @@ export function mockApiPlugin() {
   const collections = ["spring", "studio", "sport", "commuter"];
 
   type SseClient = { write: (chunk: string) => void };
+  type RequestLike = {
+    url?: string;
+    on: (event: "close", handler: () => void) => void;
+  };
+  type ResponseLike = {
+    statusCode: number;
+    setHeader: (name: string, value: string) => void;
+    end: (body?: string) => void;
+    write: (chunk: string) => void;
+  };
 
   const history: LogEvent[] = [];
   const clients = new Set<SseClient>();
@@ -200,7 +211,7 @@ export function mockApiPlugin() {
 
   return {
     name: "mock-api",
-    configureServer(server) {
+    configureServer(server: ViteDevServer) {
       if (!ticker) {
         ticker = setInterval(() => {
           const service = pick(services).name;
@@ -208,31 +219,35 @@ export function mockApiPlugin() {
         }, MOCK_INTERVAL_MS);
       }
 
-      server.middlewares.use((req, res, next) => {
-        const path = req.url?.split("?")[0] ?? "";
+      const handleMock: Connect.NextHandleFunction = (req, res, next) => {
+        const request = req as RequestLike;
+        const response = res as ResponseLike;
+        const path = request.url?.split("?")[0] ?? "";
         if (path === "/api/services") {
-          res.statusCode = 200;
-          res.setHeader("Content-Type", "application/json");
-          res.setHeader("Cache-Control", "no-cache");
-          res.end(JSON.stringify({ services }));
+          response.statusCode = 200;
+          response.setHeader("Content-Type", "application/json");
+          response.setHeader("Cache-Control", "no-cache");
+          response.end(JSON.stringify({ services }));
           return;
         }
 
         if (path === "/events") {
-          res.statusCode = 200;
-          res.setHeader("Content-Type", "text/event-stream");
-          res.setHeader("Cache-Control", "no-cache");
-          res.setHeader("Connection", "keep-alive");
-          res.write(`event: history\ndata: ${JSON.stringify(history)}\n\n`);
-          clients.add(res as SseClient);
-          req.on("close", () => {
-            clients.delete(res as SseClient);
+          response.statusCode = 200;
+          response.setHeader("Content-Type", "text/event-stream");
+          response.setHeader("Cache-Control", "no-cache");
+          response.setHeader("Connection", "keep-alive");
+          response.write(`event: history\ndata: ${JSON.stringify(history)}\n\n`);
+          clients.add(response);
+          request.on("close", () => {
+            clients.delete(response);
           });
           return;
         }
 
         next();
-      });
+      };
+
+      server.middlewares.use(handleMock);
     },
   };
 }

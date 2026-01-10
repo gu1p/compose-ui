@@ -3,7 +3,7 @@ import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { mockApiPlugin } from "./tools/mock-api";
 
 export default defineConfig(({ mode }) => {
-  const plugins = [svelte()];
+  const plugins = svelte();
   if (mode === "mock") {
     plugins.push(mockApiPlugin());
   }

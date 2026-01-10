@@ -1,10 +1,12 @@
 <script lang="ts">
-  type RenderFn = () => unknown;
+  import type { Snippet } from "svelte";
 
-  let { sidebar, content } = $props<{
-    sidebar?: RenderFn;
-    content?: RenderFn;
-  }>();
+  type SplitLayoutProps = {
+    sidebar?: Snippet;
+    content?: Snippet;
+  };
+
+  let { sidebar, content }: SplitLayoutProps = $props();
 </script>
 
 <div

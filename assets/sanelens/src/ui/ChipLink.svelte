@@ -1,12 +1,14 @@
 <script lang="ts">
-  type RenderFn = () => unknown;
+  import type { Snippet } from "svelte";
+  import type { HTMLAnchorAttributes } from "svelte/elements";
 
-  let { href = "", label = "", class: className = "", children, ...rest } = $props<{
-    href?: string;
+  type ChipLinkProps = HTMLAnchorAttributes & {
     label?: string;
-    class?: string;
-    children?: RenderFn;
-  }>();
+    children?: Snippet;
+  };
+
+  let { href = "", label = "", class: className = "", children, ...rest }: ChipLinkProps =
+    $props();
 </script>
 
 <a

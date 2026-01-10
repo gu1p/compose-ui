@@ -1,11 +1,13 @@
 <script lang="ts">
-  type RenderFn = () => unknown;
+  import type { Snippet } from "svelte";
 
-  let { drawerOpen = false, header, children } = $props<{
+  type LayoutShellProps = {
     drawerOpen?: boolean;
-    header?: RenderFn;
-    children?: RenderFn;
-  }>();
+    header?: Snippet;
+    children?: Snippet;
+  };
+
+  let { drawerOpen = false, header, children }: LayoutShellProps = $props();
 </script>
 
 <div class="flex min-h-screen flex-col overflow-hidden">

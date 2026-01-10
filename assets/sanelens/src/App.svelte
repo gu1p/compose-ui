@@ -15,42 +15,49 @@
   import type { LogEvent, PanelConfig, PanelState, ServiceInfo } from "./lib/types";
   import { buildSearchString, readStateFromUrl, serializePanelsConfig } from "./lib/url-state";
 
-  const state = $state({
-    services: [] as ServiceInfo[],
-    panels: [] as PanelState[],
-    activePanelId: null as string | null,
-    history: [] as LogEvent[],
+  type AppState = {
+    services: ServiceInfo[];
+    panels: PanelState[];
+    activePanelId: string | null;
+    history: LogEvent[];
+  };
+
+  const appState: AppState = $state({
+    services: [],
+    panels: [],
+    activePanelId: null,
+    history: [],
   });
 
   let panelCounter = 0;
   let pendingUrlSync: ReturnType<typeof setTimeout> | null = null;
   let lastUrlSignature = "";
   let isRestoring = false;
-  let drawerPanel = $state<PanelState | null>(null);
-  let loadError = $state<string | null>(null);
+  let drawerPanel: PanelState | null = $state(null);
+  let loadError: string | null = $state(null);
   let eventStream: EventSource | null = null;
 
   const drawerOpen = $derived.by(() => drawerPanel !== null);
   const activePanel = $derived.by(() => {
-    if (!state.activePanelId && state.panels.length) {
-      return state.panels[0];
+    if (!appState.activePanelId && appState.panels.length) {
+      return appState.panels[0];
     }
-    return state.panels.find((panel) => panel.id === state.activePanelId) ?? null;
+    return appState.panels.find((panel) => panel.id === appState.activePanelId) ?? null;
   });
 
   function setActivePanel(panelId: string) {
-    const changed = state.activePanelId !== panelId;
-    state.activePanelId = panelId;
+    const changed = appState.activePanelId !== panelId;
+    appState.activePanelId = panelId;
     if (changed) {
       scheduleUrlSync();
     }
   }
 
   function getActivePanelIndex(): number | null {
-    if (!state.activePanelId) {
+    if (!appState.activePanelId) {
       return null;
     }
-    const index = state.panels.findIndex((panel) => panel.id === state.activePanelId);
+    const index = appState.panels.findIndex((panel) => panel.id === appState.activePanelId);
     if (index < 0) {
       return null;
     }
@@ -61,7 +68,7 @@
     if (isRestoring) {
       return;
     }
-    const panelsValue = serializePanelsConfig(state.panels);
+    const panelsValue = serializePanelsConfig(appState.panels);
     const activeIndex = getActivePanelIndex();
     const nextSignature = `${panelsValue}|${activeIndex ?? ""}`;
     if (nextSignature === lastUrlSignature) {
@@ -87,7 +94,7 @@
   }
 
   function rebuildPanelLogs(panel: PanelState) {
-    panel.logs = state.history
+    panel.logs = appState.history
       .filter((entry) => entryMatchesPanel(panel, entry))
       .slice(-MAX_LINES_PER_PANEL);
   }
@@ -112,9 +119,9 @@
       logs: [],
       delay: Math.min(panelCounter * 0.05, 0.3),
     };
-    state.panels.push(panel);
-    if (!state.activePanelId) {
-      state.activePanelId = panel.id;
+    appState.panels.push(panel);
+    if (!appState.activePanelId) {
+      appState.activePanelId = panel.id;
     }
     if (config) {
       applyPanelConfig(panel, config);
@@ -131,14 +138,14 @@
       return false;
     }
     isRestoring = true;
-    state.panels = [];
-    state.activePanelId = null;
+    appState.panels = [];
+    appState.activePanelId = null;
     panelCounter = 0;
     urlState.panels.forEach((config) => {
       createPanel(config);
     });
-    if (urlState.activeIndex !== null && state.panels[urlState.activeIndex]) {
-      state.activePanelId = state.panels[urlState.activeIndex].id;
+    if (urlState.activeIndex !== null && appState.panels[urlState.activeIndex]) {
+      appState.activePanelId = appState.panels[urlState.activeIndex].id;
     }
     isRestoring = false;
     scheduleUrlSync();
@@ -181,16 +188,16 @@
   }
 
   function closePanel(panel: PanelState) {
-    if (state.panels.length <= 1) {
+    if (appState.panels.length <= 1) {
       return;
     }
-    const index = state.panels.findIndex((item) => item.id === panel.id);
+    const index = appState.panels.findIndex((item) => item.id === panel.id);
     if (index < 0) {
       return;
     }
-    state.panels.splice(index, 1);
-    if (state.activePanelId === panel.id) {
-      state.activePanelId = state.panels[0]?.id ?? null;
+    appState.panels.splice(index, 1);
+    if (appState.activePanelId === panel.id) {
+      appState.activePanelId = appState.panels[0]?.id ?? null;
     }
     if (drawerPanel?.id === panel.id) {
       drawerPanel = null;
@@ -219,11 +226,11 @@
   }
 
   function handleLogEvent(entry: LogEvent) {
-    state.history.push(entry);
-    if (state.history.length > HISTORY_LIMIT) {
-      state.history.shift();
+    appState.history.push(entry);
+    if (appState.history.length > HISTORY_LIMIT) {
+      appState.history.shift();
     }
-    state.panels.forEach((panel) => {
+    appState.panels.forEach((panel) => {
       if (entryMatchesPanel(panel, entry)) {
         panel.logs.push(entry);
         while (panel.logs.length > MAX_LINES_PER_PANEL) {
@@ -239,8 +246,8 @@
       try {
         const entries = JSON.parse((event as MessageEvent).data);
         if (Array.isArray(entries)) {
-          state.history = entries.slice(-HISTORY_LIMIT);
-          state.panels.forEach((panel) => rebuildPanelLogs(panel));
+          appState.history = entries.slice(-HISTORY_LIMIT);
+          appState.panels.forEach((panel) => rebuildPanelLogs(panel));
         }
       } catch (error) {
         console.error(error);
@@ -260,7 +267,7 @@
     try {
       const response = await fetch("/api/services");
       const payload = await response.json();
-      state.services = payload.services ?? [];
+      appState.services = payload.services ?? [];
       if (!restorePanelsFromUrl()) {
         createPanel();
       }
@@ -286,13 +293,13 @@
 
   <SplitLayout>
     {#snippet sidebar()}
-      <ServicesPanel services={state.services} error={loadError} onSelect={handleServiceSelect} />
+      <ServicesPanel services={appState.services} error={loadError} onSelect={handleServiceSelect} />
     {/snippet}
     {#snippet content()}
       <PanelGrid
-        panels={state.panels}
-        services={state.services}
-        activePanelId={state.activePanelId}
+        panels={appState.panels}
+        services={appState.services}
+        activePanelId={appState.activePanelId}
         onActivate={setActivePanel}
         onToggleFollow={toggleFollow}
         onOpenFilters={openFilterDrawer}

@@ -1,7 +1,11 @@
 <script lang="ts">
   import Button from "../ui/Button.svelte";
 
-  let { onAddPanel = () => {} } = $props();
+  type TopBarProps = {
+    onAddPanel?: () => void;
+  };
+
+  let { onAddPanel = () => {} }: TopBarProps = $props();
 </script>
 
 <div

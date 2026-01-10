@@ -5,11 +5,13 @@
   import { endpointLabel, getEndpoints } from "../lib/services";
   import type { ServiceInfo } from "../lib/types";
 
-  let { services = [], error = null, onSelect = () => {} } = $props<{
+  type ServicesPanelProps = {
     services?: ServiceInfo[];
     error?: string | null;
     onSelect?: (service: ServiceInfo) => void;
-  }>();
+  };
+
+  let { services = [], error = null, onSelect = () => {} }: ServicesPanelProps = $props();
 </script>
 
 <Surface class="h-full overflow-auto">
