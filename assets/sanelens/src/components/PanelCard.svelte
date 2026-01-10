@@ -1,11 +1,9 @@
 <script lang="ts">
   import Chip from "../ui/Chip.svelte";
-  import ChipLink from "../ui/ChipLink.svelte";
   import Surface from "../ui/Surface.svelte";
   import LogView from "./LogView.svelte";
   import { buildPanelMeta } from "../lib/filters";
   import { colorFor } from "../lib/colors";
-  import { endpointLabel, getEndpoints } from "../lib/services";
   import type { PanelState, ServiceInfo } from "../lib/types";
 
   let {
@@ -84,7 +82,6 @@
       All
     </Chip>
     {#each services as service (service.name)}
-      {@const endpoints = getEndpoints(service)}
       <div class="flex items-center gap-2">
         <Chip
           size="sm"
@@ -94,9 +91,6 @@
         >
           {service.name}
         </Chip>
-        {#each endpoints as endpoint (endpoint)}
-          <ChipLink href={endpoint} label={endpointLabel(endpoint)} />
-        {/each}
       </div>
     {/each}
   </div>

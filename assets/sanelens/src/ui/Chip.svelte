@@ -34,9 +34,11 @@
 
 <button
   type={type}
-  class={`${base} ${sizes[size]} ${ghost ? "border-dashed bg-transparent" : "bg-[#fff9f1]"} ${
-    muted ? "text-muted" : "text-ink"
-  } ${active ? "border-transparent text-[#0f1512] chip-active" : "border-ink/15"} ${className}`}
+  class={`${base} ${sizes[size]} ${
+    ghost ? "border-dashed bg-transparent" : active ? "" : "bg-[#fff9f1]"
+  } ${muted ? "text-muted" : "text-ink"} ${
+    active ? "border-transparent text-[#0f1512] chip-active" : "border-ink/15"
+  } ${className}`}
   {...rest}
 >
   {@render children?.()}
