@@ -10,7 +10,7 @@
   let { drawerOpen = false, header, children }: LayoutShellProps = $props();
 </script>
 
-<div class="flex min-h-screen flex-col overflow-hidden">
+<div class="flex h-full min-h-0 flex-col overflow-hidden">
   <header
     class="sticky top-0 z-20 border-b border-ink/10 bg-[rgba(245,239,230,0.9)] backdrop-blur-md"
   >

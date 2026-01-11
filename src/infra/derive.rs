@@ -1,0 +1,944 @@
+use std::collections::{HashMap, HashSet};
+use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use serde_yaml::{Mapping, Value};
+
+#[derive(Clone)]
+pub struct DerivedCompose {
+    pub path: PathBuf,
+    pub proxy_services: HashSet<String>,
+    pub app_service_map: HashMap<String, String>,
+    pub egress_proxy: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct DeriveConfig {
+    pub envoy_image: String,
+    pub enable_egress: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProxyProtocol {
+    Http,
+    Tcp,
+}
+
+#[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
+pub fn derive_compose(
+    compose_file: &str,
+    project_name: &str,
+    config: &DeriveConfig,
+) -> Result<DerivedCompose, String> {
+    let compose_path = to_absolute_path(compose_file)
+        .map_err(|err| format!("failed to resolve compose path: {err}"))?;
+    let contents = fs::read_to_string(&compose_path)
+        .map_err(|err| format!("failed to read compose file: {err}"))?;
+    let mut doc: Value =
+        serde_yaml::from_str(&contents).map_err(|err| format!("invalid compose yaml: {err}"))?;
+    let compose_dir = compose_path.parent().unwrap_or_else(|| Path::new("."));
+    let out_dir = compose_dir.join(".sanelens").join(project_name);
+    let envoy_dir = out_dir.join("envoy");
+    fs::create_dir_all(&envoy_dir).map_err(|err| format!("failed to create derived dir: {err}"))?;
+
+    rewrite_top_level_paths(&mut doc, compose_dir);
+
+    let mut new_services = Mapping::new();
+    let mut proxy_services = HashSet::new();
+    let mut app_service_map = HashMap::new();
+    let mut proxy_app_map = HashMap::new();
+    let network_names = collect_network_names(&doc);
+    let Some(Value::Mapping(services)) = doc.get_mut("services") else {
+        return Err("compose file missing services".to_string());
+    };
+
+    let mut service_names: Vec<String> = services
+        .keys()
+        .filter_map(|key| key.as_str().map(ToString::to_string))
+        .collect();
+    service_names.sort();
+
+    let mut no_proxy_hosts = Vec::new();
+    for name in &service_names {
+        no_proxy_hosts.push(name.clone());
+    }
+    no_proxy_hosts.push("localhost".to_string());
+    no_proxy_hosts.push("127.0.0.1".to_string());
+    let no_proxy_value = no_proxy_hosts.join(",");
+
+    for name in service_names {
+        let key = Value::String(name.clone());
+        let service_value = services.get(&key).cloned().unwrap_or(Value::Null);
+        let mut service = match service_value {
+            Value::Mapping(map) => map,
+            other => {
+                new_services.insert(key, other);
+                continue;
+            }
+        };
+        rewrite_service_paths(&mut service, compose_dir);
+        let network_mode = get_string(&service, "network_mode");
+        if network_mode.as_deref() == Some("host") || network_mode.as_deref() == Some("none") {
+            new_services.insert(key, Value::Mapping(service));
+            continue;
+        }
+        let ports = extract_ports(&service);
+        if ports.is_empty() {
+            if config.enable_egress {
+                ensure_env_var(
+                    &mut service,
+                    "HTTP_PROXY",
+                    "http://sanelens-egress-proxy:15001",
+                );
+                ensure_env_var(
+                    &mut service,
+                    "HTTPS_PROXY",
+                    "http://sanelens-egress-proxy:15001",
+                );
+                merge_env_var(&mut service, "NO_PROXY", &no_proxy_value);
+            }
+            new_services.insert(key, Value::Mapping(service));
+            continue;
+        }
+        let protocol_override = read_proxy_protocol(&service);
+        if protocol_override == Some("off".to_string()) {
+            if config.enable_egress {
+                ensure_env_var(
+                    &mut service,
+                    "HTTP_PROXY",
+                    "http://sanelens-egress-proxy:15001",
+                );
+                ensure_env_var(
+                    &mut service,
+                    "HTTPS_PROXY",
+                    "http://sanelens-egress-proxy:15001",
+                );
+                merge_env_var(&mut service, "NO_PROXY", &no_proxy_value);
+            }
+            new_services.insert(key, Value::Mapping(service));
+            continue;
+        }
+
+        let mut port_modes = Vec::new();
+        for port in &ports {
+            let mode = match protocol_override.as_deref() {
+                Some("http") => ProxyProtocol::Http,
+                Some("tcp") => ProxyProtocol::Tcp,
+                Some("auto" | "true") | None => guess_protocol(*port),
+                Some(other) => {
+                    eprintln!("[compose] unknown sanelens.proxy value '{other}' on {name}");
+                    guess_protocol(*port)
+                }
+            };
+            port_modes.push((*port, mode));
+        }
+
+        let app_name = format!("{name}_app");
+        app_service_map.insert(app_name.clone(), name.clone());
+        proxy_app_map.insert(name.clone(), app_name.clone());
+
+        let original_ports = service.remove(Value::String("ports".to_string()));
+        let original_expose = service.remove(Value::String("expose".to_string()));
+        let original_container_name = service.remove(Value::String("container_name".to_string()));
+
+        let mut app_service = service.clone();
+        ensure_expose_ports(&mut app_service, &ports, original_expose.as_ref());
+        add_label(&mut app_service, "sanelens.app", "true");
+        add_label(&mut app_service, "sanelens.app.name", &name);
+        if config.enable_egress {
+            ensure_env_var(
+                &mut app_service,
+                "HTTP_PROXY",
+                "http://sanelens-egress-proxy:15001",
+            );
+            ensure_env_var(
+                &mut app_service,
+                "HTTPS_PROXY",
+                "http://sanelens-egress-proxy:15001",
+            );
+            merge_env_var(&mut app_service, "NO_PROXY", &no_proxy_value);
+        }
+
+        let mut proxy_service = Mapping::new();
+        proxy_service.insert(
+            Value::String("image".to_string()),
+            Value::String(config.envoy_image.clone()),
+        );
+        if let Some(restart) = service.get(Value::String("restart".to_string())) {
+            proxy_service.insert(Value::String("restart".to_string()), restart.clone());
+        }
+        if let Some(networks) = service.get(Value::String("networks".to_string())) {
+            proxy_service.insert(Value::String("networks".to_string()), networks.clone());
+        }
+        let depends = build_proxy_depends_on(&app_name);
+        proxy_service.insert(Value::String("depends_on".to_string()), depends);
+        if let Some(ports_value) = original_ports.clone() {
+            proxy_service.insert(Value::String("ports".to_string()), ports_value);
+        }
+        if let Some(container_name) = original_container_name {
+            proxy_service.insert(Value::String("container_name".to_string()), container_name);
+        }
+        let expose_value = build_expose_value(&ports, original_expose.as_ref());
+        if let Some(expose) = expose_value {
+            proxy_service.insert(Value::String("expose".to_string()), expose);
+        }
+        let envoy_config = envoy_dir.join(format!("{name}.yaml"));
+        let envoy_config_path = envoy_config.to_string_lossy();
+        let volumes_value = Value::Sequence(vec![Value::String(format!(
+            "{envoy_config_path}:/etc/envoy/envoy.yaml:ro"
+        ))]);
+        proxy_service.insert(Value::String("volumes".to_string()), volumes_value);
+        add_label(&mut proxy_service, "sanelens.proxy", "true");
+        add_label(&mut proxy_service, "sanelens.proxy.name", &name);
+
+        write_envoy_config(&envoy_dir, &name, &app_name, &port_modes)
+            .map_err(|err| format!("failed to write envoy config: {err}"))?;
+
+        new_services.insert(Value::String(name.clone()), Value::Mapping(proxy_service));
+        new_services.insert(Value::String(app_name), Value::Mapping(app_service));
+        proxy_services.insert(name);
+    }
+
+    if config.enable_egress {
+        let egress_name = "sanelens-egress-proxy".to_string();
+        let egress_config = build_egress_service(
+            &config.envoy_image,
+            &network_names,
+            &envoy_dir.join("egress.yaml"),
+        );
+        let egress_envoy = envoy_dir.join("egress.yaml");
+        write_egress_envoy_config(&egress_envoy)
+            .map_err(|err| format!("failed to write egress envoy config: {err}"))?;
+        new_services.insert(Value::String(egress_name.clone()), egress_config);
+        proxy_services.insert(egress_name);
+    }
+
+    for (_, value) in new_services.iter_mut() {
+        let Value::Mapping(service) = value else {
+            continue;
+        };
+        rewrite_depends_on_for_proxies(service, &proxy_app_map);
+    }
+
+    *services = new_services;
+
+    let derived_path = out_dir.join("compose.derived.yaml");
+    let payload =
+        serde_yaml::to_string(&doc).map_err(|err| format!("serialize compose failed: {err}"))?;
+    fs::write(&derived_path, payload)
+        .map_err(|err| format!("write derived compose failed: {err}"))?;
+
+    Ok(DerivedCompose {
+        path: derived_path,
+        proxy_services,
+        app_service_map,
+        egress_proxy: if config.enable_egress {
+            Some("sanelens-egress-proxy".to_string())
+        } else {
+            None
+        },
+    })
+}
+
+fn build_proxy_depends_on(app_name: &str) -> Value {
+    let mut map = Mapping::new();
+    map.insert(
+        Value::String(app_name.to_string()),
+        Value::Mapping(Mapping::new()),
+    );
+    Value::Mapping(map)
+}
+
+fn rewrite_depends_on_for_proxies(
+    service: &mut Mapping,
+    proxy_app_map: &HashMap<String, String>,
+) {
+    let depends_key = Value::String("depends_on".to_string());
+    let Some(depends) = service.get_mut(&depends_key) else {
+        return;
+    };
+    let Value::Mapping(depends_map) = depends else {
+        return;
+    };
+    let mut replacements = Vec::new();
+    for (key, value) in depends_map.iter() {
+        let Some(service_name) = key.as_str() else {
+            continue;
+        };
+        let Some(app_name) = proxy_app_map.get(service_name) else {
+            continue;
+        };
+        if is_service_healthy_condition(value) {
+            replacements.push((service_name.to_string(), app_name.clone(), value.clone()));
+        }
+    }
+    for (old, new, config) in replacements {
+        depends_map.remove(&Value::String(old));
+        depends_map.insert(Value::String(new), config);
+    }
+}
+
+fn is_service_healthy_condition(value: &Value) -> bool {
+    let Value::Mapping(map) = value else {
+        return false;
+    };
+    map.get(Value::String("condition".to_string()))
+        .and_then(|value| value.as_str())
+        .is_some_and(|condition| condition == "service_healthy")
+}
+
+fn build_expose_value(ports: &[u16], original: Option<&Value>) -> Option<Value> {
+    let mut items: Vec<Value> = Vec::new();
+    for port in ports {
+        items.push(Value::String(port.to_string()));
+    }
+    if let Some(Value::Sequence(entries)) = original {
+        for entry in entries {
+            items.push(entry.clone());
+        }
+    }
+    if items.is_empty() {
+        None
+    } else {
+        Some(Value::Sequence(items))
+    }
+}
+
+fn ensure_expose_ports(service: &mut Mapping, ports: &[u16], original_expose: Option<&Value>) {
+    let expose_value = build_expose_value(ports, original_expose);
+    if let Some(value) = expose_value {
+        service.insert(Value::String("expose".to_string()), value);
+    }
+}
+
+fn read_proxy_protocol(service: &Mapping) -> Option<String> {
+    let labels = service.get(Value::String("labels".to_string()));
+    let key = "sanelens.proxy";
+    match labels {
+        Some(Value::Sequence(list)) => {
+            list.iter()
+                .filter_map(|entry| entry.as_str())
+                .find_map(|entry| {
+                    entry
+                        .strip_prefix(&format!("{key}="))
+                        .map(str::to_lowercase)
+                })
+        }
+        Some(Value::Mapping(map)) => map
+            .get(Value::String(key.to_string()))
+            .and_then(|value| value.as_str())
+            .map(str::to_lowercase),
+        _ => None,
+    }
+}
+
+fn add_label(service: &mut Mapping, key: &str, value: &str) {
+    let labels_key = Value::String("labels".to_string());
+    match service.get_mut(&labels_key) {
+        Some(Value::Mapping(map)) => {
+            map.insert(
+                Value::String(key.to_string()),
+                Value::String(value.to_string()),
+            );
+        }
+        Some(Value::Sequence(list)) => {
+            list.push(Value::String(format!("{key}={value}")));
+        }
+        _ => {
+            let mut map = Mapping::new();
+            map.insert(
+                Value::String(key.to_string()),
+                Value::String(value.to_string()),
+            );
+            service.insert(labels_key, Value::Mapping(map));
+        }
+    }
+}
+
+fn ensure_env_var(service: &mut Mapping, key: &str, value: &str) {
+    let env_key = Value::String("environment".to_string());
+    match service.get_mut(&env_key) {
+        Some(Value::Mapping(map)) => {
+            map.entry(Value::String(key.to_string()))
+                .or_insert(Value::String(value.to_string()));
+        }
+        Some(Value::Sequence(list)) => {
+            if list.iter().any(|entry| {
+                entry
+                    .as_str()
+                    .is_some_and(|item| item.starts_with(&format!("{key}=")))
+            }) {
+                return;
+            }
+            list.push(Value::String(format!("{key}={value}")));
+        }
+        _ => {
+            let mut map = Mapping::new();
+            map.insert(
+                Value::String(key.to_string()),
+                Value::String(value.to_string()),
+            );
+            service.insert(env_key, Value::Mapping(map));
+        }
+    }
+}
+
+fn merge_env_var(service: &mut Mapping, key: &str, value: &str) {
+    let env_key = Value::String("environment".to_string());
+    match service.get_mut(&env_key) {
+        Some(Value::Mapping(map)) => {
+            if let Some(existing) = map
+                .get(Value::String(key.to_string()))
+                .and_then(|value| value.as_str())
+            {
+                let merged = format!("{existing},{value}");
+                map.insert(Value::String(key.to_string()), Value::String(merged));
+            } else {
+                map.insert(
+                    Value::String(key.to_string()),
+                    Value::String(value.to_string()),
+                );
+            }
+        }
+        Some(Value::Sequence(list)) => {
+            let mut updated = false;
+            let prefix = format!("{key}=");
+            for entry in list.iter_mut() {
+                let Some(item) = entry.as_str().filter(|item| item.starts_with(&prefix)) else {
+                    continue;
+                };
+                let merged = format!("{item},{value}");
+                *entry = Value::String(merged);
+                updated = true;
+                break;
+            }
+            if !updated {
+                list.push(Value::String(format!("{key}={value}")));
+            }
+        }
+        _ => {
+            let mut map = Mapping::new();
+            map.insert(
+                Value::String(key.to_string()),
+                Value::String(value.to_string()),
+            );
+            service.insert(env_key, Value::Mapping(map));
+        }
+    }
+}
+
+fn get_string(map: &Mapping, key: &str) -> Option<String> {
+    map.get(Value::String(key.to_string()))
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string)
+}
+
+fn extract_ports(service: &Mapping) -> Vec<u16> {
+    let mut ports = Vec::new();
+    if let Some(Value::Sequence(entries)) = service.get(Value::String("ports".to_string())) {
+        for entry in entries {
+            let port = match entry {
+                Value::String(value) => parse_container_port(value),
+                Value::Mapping(map) => map
+                    .get(Value::String("target".to_string()))
+                    .and_then(value_to_u16),
+                _ => None,
+            };
+            if let Some(port) = port {
+                ports.push(port);
+            }
+        }
+    }
+    if let Some(Value::Sequence(entries)) = service.get(Value::String("expose".to_string())) {
+        for entry in entries {
+            if let Some(port) = value_to_u16(entry) {
+                ports.push(port);
+            }
+        }
+    }
+    ports.sort_unstable();
+    ports.dedup();
+    ports
+}
+
+fn value_to_u16(value: &Value) -> Option<u16> {
+    match value {
+        Value::Number(num) => num.as_u64().and_then(|v| u16::try_from(v).ok()),
+        Value::String(value) => {
+            let token = value.split('/').next().unwrap_or(value);
+            parse_port_token(token)
+        }
+        _ => None,
+    }
+}
+
+fn parse_container_port(entry: &str) -> Option<u16> {
+    let entry = entry.split('/').next().unwrap_or(entry).trim();
+    if entry.is_empty() {
+        return None;
+    }
+    let parts: Vec<&str> = entry.split(':').collect();
+    let port_str = parts.last().copied().unwrap_or("");
+    if port_str.is_empty() {
+        return None;
+    }
+    parse_port_token(port_str)
+}
+
+fn parse_port_token(token: &str) -> Option<u16> {
+    let token = token.trim();
+    if token.is_empty() {
+        return None;
+    }
+    if let Ok(port) = token.parse::<u16>() {
+        return Some(port);
+    }
+    let inner = token.strip_prefix("${").and_then(|rest| rest.strip_suffix('}'))?;
+    let default = if let Some((_, default)) = inner.split_once(":-") {
+        default
+    } else if let Some((_, default)) = inner.split_once('-') {
+        default
+    } else {
+        return None;
+    };
+    let default = default.trim().trim_matches('"').trim_matches('\'');
+    parse_port_token(default)
+}
+
+fn guess_protocol(port: u16) -> ProxyProtocol {
+    const HTTP_PORTS: [u16; 12] = [
+        80, 443, 3000, 3001, 3002, 5173, 8000, 8080, 8100, 9000, 10000, 15672,
+    ];
+    if HTTP_PORTS.contains(&port) {
+        ProxyProtocol::Http
+    } else {
+        ProxyProtocol::Tcp
+    }
+}
+
+fn build_egress_service(envoy_image: &str, networks: &[String], config_path: &Path) -> Value {
+    let mut map = Mapping::new();
+    map.insert(
+        Value::String("image".to_string()),
+        Value::String(envoy_image.to_string()),
+    );
+    let config_path_display = config_path.to_string_lossy();
+    map.insert(
+        Value::String("volumes".to_string()),
+        Value::Sequence(vec![Value::String(format!(
+            "{config_path_display}:/etc/envoy/envoy.yaml:ro"
+        ))]),
+    );
+    if !networks.is_empty() {
+        let list = networks
+            .iter()
+            .map(|name| Value::String(name.clone()))
+            .collect();
+        map.insert(Value::String("networks".to_string()), Value::Sequence(list));
+    }
+    add_label(&mut map, "sanelens.proxy", "true");
+    add_label(&mut map, "sanelens.proxy.egress", "true");
+    Value::Mapping(map)
+}
+
+fn collect_network_names(doc: &Value) -> Vec<String> {
+    let mut names = Vec::new();
+    if let Some(Value::Mapping(map)) = doc.get("networks") {
+        for key in map.keys() {
+            if let Some(name) = key.as_str() {
+                names.push(name.to_string());
+            }
+        }
+    }
+    names
+}
+
+fn rewrite_top_level_paths(doc: &mut Value, base_dir: &Path) {
+    if let Some(Value::Mapping(map)) = doc.get_mut("configs") {
+        rewrite_named_file_entries(map, base_dir);
+    }
+    if let Some(Value::Mapping(map)) = doc.get_mut("secrets") {
+        rewrite_named_file_entries(map, base_dir);
+    }
+}
+
+fn rewrite_string_value(value: &mut String, base_dir: &Path, kind: PathKind) {
+    if let Some(updated) = rewrite_path_value(value, base_dir, kind) {
+        *value = updated;
+    }
+}
+
+fn rewrite_named_file_entries(map: &mut Mapping, base_dir: &Path) {
+    for (_, entry) in map.iter_mut() {
+        rewrite_named_file_entry(entry, base_dir);
+    }
+}
+
+fn rewrite_named_file_entry(entry: &mut Value, base_dir: &Path) {
+    let Value::Mapping(def) = entry else {
+        return;
+    };
+    let Some(Value::String(file)) = def.get_mut(Value::String("file".to_string())) else {
+        return;
+    };
+    rewrite_string_value(file, base_dir, PathKind::File);
+}
+
+fn rewrite_service_paths(service: &mut Mapping, base_dir: &Path) {
+    rewrite_build(service, base_dir);
+    rewrite_env_files(service, base_dir);
+    rewrite_volumes(service, base_dir);
+    rewrite_extends(service, base_dir);
+}
+
+fn rewrite_build(service: &mut Mapping, base_dir: &Path) {
+    let Some(value) = service.get_mut(Value::String("build".to_string())) else {
+        return;
+    };
+    match value {
+        Value::String(context) => {
+            rewrite_string_value(context, base_dir, PathKind::Dir);
+        }
+        Value::Mapping(map) => {
+            if let Some(Value::String(context)) = map.get_mut(Value::String("context".to_string()))
+            {
+                rewrite_string_value(context, base_dir, PathKind::Dir);
+            }
+            if let Some(Value::Mapping(additional)) =
+                map.get_mut(Value::String("additional_contexts".to_string()))
+            {
+                rewrite_additional_contexts(additional, base_dir);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_additional_contexts(additional: &mut Mapping, base_dir: &Path) {
+    for (_, ctx_value) in additional.iter_mut() {
+        let Value::String(ctx) = ctx_value else {
+            continue;
+        };
+        rewrite_string_value(ctx, base_dir, PathKind::Dir);
+    }
+}
+
+fn rewrite_env_files(service: &mut Mapping, base_dir: &Path) {
+    let Some(value) = service.get_mut(Value::String("env_file".to_string())) else {
+        return;
+    };
+    match value {
+        Value::String(path) => rewrite_string_value(path, base_dir, PathKind::File),
+        Value::Sequence(entries) => {
+            for entry in entries {
+                let Value::String(path) = entry else {
+                    continue;
+                };
+                rewrite_string_value(path, base_dir, PathKind::File);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_extends(service: &mut Mapping, base_dir: &Path) {
+    let Some(Value::Mapping(map)) = service.get_mut(Value::String("extends".to_string())) else {
+        return;
+    };
+    let Some(Value::String(file)) = map.get_mut(Value::String("file".to_string())) else {
+        return;
+    };
+    rewrite_string_value(file, base_dir, PathKind::File);
+}
+
+fn rewrite_volumes(service: &mut Mapping, base_dir: &Path) {
+    let volumes_key = Value::String("volumes".to_string());
+    let Some(Value::Sequence(entries)) = service.get_mut(&volumes_key) else {
+        return;
+    };
+    for entry in entries {
+        match entry {
+            Value::String(value) => {
+                if let Some(updated) = rewrite_volume_short(value, base_dir) {
+                    *value = updated;
+                }
+            }
+            Value::Mapping(map) => {
+                let kind = match map.get(Value::String("type".to_string())) {
+                    Some(Value::String(kind)) if kind == "bind" => PathKind::Dir,
+                    Some(Value::String(kind)) if kind == "volume" => PathKind::Volume,
+                    _ => PathKind::Unknown,
+                };
+                let Some(Value::String(source)) = map.get_mut(Value::String("source".to_string()))
+                else {
+                    continue;
+                };
+                rewrite_string_value(source, base_dir, kind);
+            }
+            _ => {}
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum PathKind {
+    Dir,
+    File,
+    Volume,
+    Unknown,
+}
+
+fn rewrite_volume_short(value: &str, base_dir: &Path) -> Option<String> {
+    let (source, target, mode) = split_volume_entry(value)?;
+    if source.is_empty() {
+        return None;
+    }
+    let kind = if is_probably_path(&source) {
+        PathKind::Dir
+    } else {
+        PathKind::Volume
+    };
+    if let Some(updated) = rewrite_path_value(&source, base_dir, kind) {
+        let mut rebuilt = format!("{updated}:{target}");
+        if let Some(mode) = mode {
+            rebuilt.push(':');
+            rebuilt.push_str(&mode);
+        }
+        return Some(rebuilt);
+    }
+    None
+}
+
+fn split_volume_entry(value: &str) -> Option<(String, String, Option<String>)> {
+    let parts: Vec<&str> = value.split(':').collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let mut index = 1;
+    let first = parts.first().copied().unwrap_or("");
+    let mut source = first.to_string();
+    if parts.len() >= 3
+        && first.len() == 1
+        && parts
+            .get(1)
+            .is_some_and(|part| part.starts_with('\\') || part.starts_with('/'))
+    {
+        let source_drive = first;
+        let source_path = parts.get(1).copied().unwrap_or("");
+        source = format!("{source_drive}:{source_path}");
+        index = 2;
+    }
+    let remaining = parts.get(index..)?;
+    let target = remaining.first().copied()?.to_string();
+    let mode = if remaining.len() > 1 {
+        let extra: Vec<&str> = remaining.iter().skip(1).copied().collect();
+        Some(extra.join(":"))
+    } else {
+        None
+    };
+    Some((source, target, mode))
+}
+
+fn rewrite_path_value(value: &str, base_dir: &Path, kind: PathKind) -> Option<String> {
+    if value.contains("${") || value.contains('$') {
+        if let Some(updated) = rewrite_default_expr(value, base_dir, kind) {
+            return Some(updated);
+        }
+        return None;
+    }
+    if is_uri_like(value) {
+        return None;
+    }
+    let path = Path::new(value);
+    if path.is_absolute() {
+        return None;
+    }
+    if matches!(kind, PathKind::Volume | PathKind::Unknown) && !is_probably_path(value) {
+        return None;
+    }
+    let expanded = expand_tilde(value);
+    let path = Path::new(&expanded);
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base_dir.join(path)
+    };
+    Some(absolute.to_string_lossy().into_owned())
+}
+
+fn rewrite_default_expr(value: &str, base_dir: &Path, kind: PathKind) -> Option<String> {
+    let trimmed = value.trim();
+    let inner = trimmed
+        .strip_prefix("${")
+        .and_then(|rest| rest.strip_suffix('}'))?;
+    let (var, default, op) = if let Some((var, default)) = inner.split_once(":-") {
+        (var, default, ":-")
+    } else if let Some((var, default)) = inner.split_once('-') {
+        (var, default, "-")
+    } else {
+        return None;
+    };
+    let default = default.trim();
+    if default.is_empty() {
+        return None;
+    }
+    if matches!(kind, PathKind::Volume | PathKind::Unknown) && !is_probably_path(default) {
+        return None;
+    }
+    let default_rewrite = rewrite_path_value(default, base_dir, PathKind::Unknown)?;
+    let var_name = var.trim();
+    Some(format!("${{{var_name}{op}{default_rewrite}}}"))
+}
+
+fn expand_tilde(value: &str) -> String {
+    if let Some(rest) = value.strip_prefix("~/") {
+        if let Ok(home) = env::var("HOME") {
+            return format!("{home}/{rest}");
+        }
+    }
+    value.to_string()
+}
+
+fn is_probably_path(value: &str) -> bool {
+    if value == "." || value == ".." {
+        return true;
+    }
+    value.starts_with("./")
+        || value.starts_with("../")
+        || value.starts_with('/')
+        || value.starts_with('~')
+        || value.contains('/')
+        || value.contains('\\')
+}
+
+fn to_absolute_path(path: &str) -> Result<PathBuf, String> {
+    let candidate = PathBuf::from(path);
+    if candidate.is_absolute() {
+        return Ok(candidate);
+    }
+    let cwd = env::current_dir().map_err(|err| err.to_string())?;
+    Ok(cwd.join(candidate))
+}
+
+fn is_uri_like(value: &str) -> bool {
+    let lower = value.to_lowercase();
+    lower.contains("://") || lower.starts_with("git@")
+}
+
+fn write_envoy_config(
+    envoy_dir: &Path,
+    service_name: &str,
+    app_name: &str,
+    ports: &[(u16, ProxyProtocol)],
+) -> Result<(), String> {
+    let mut body = String::new();
+    body.push_str("static_resources:\n  listeners:\n");
+    for (port, mode) in ports {
+        match mode {
+            ProxyProtocol::Http => {
+                body.push_str(&http_listener_block(service_name, app_name, *port));
+            }
+            ProxyProtocol::Tcp => {
+                body.push_str(&tcp_listener_block(service_name, app_name, *port));
+            }
+        }
+    }
+    body.push_str("  clusters:\n");
+    for (port, _) in ports {
+        body.push_str(&cluster_block(app_name, *port));
+    }
+    body.push_str("admin:\n  access_log_path: /tmp/envoy_admin.log\n  address:\n    socket_address:\n      address: 0.0.0.0\n      port_value: 9901\n");
+
+    let path = envoy_dir.join(format!("{service_name}.yaml"));
+    fs::write(path, body).map_err(|err| err.to_string())
+}
+
+#[allow(clippy::too_many_lines)]
+fn write_egress_envoy_config(path: &Path) -> Result<(), String> {
+    let body = r#"static_resources:
+  listeners:
+  - name: egress_listener
+    address:
+      socket_address:
+        address: 0.0.0.0
+        port_value: 15001
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: egress_http
+          route_config:
+            name: egress_route
+            virtual_hosts:
+            - name: default
+              domains: ["*"]
+              routes:
+              - match:
+                  prefix: "/"
+                route:
+                  cluster: egress_cluster
+                  timeout: 0s
+          http_filters:
+          - name: envoy.filters.http.dynamic_forward_proxy
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.FilterConfig
+              dns_cache_config:
+                name: egress_cache
+                dns_lookup_family: V4_ONLY
+          - name: envoy.filters.http.router
+          access_log:
+          - name: envoy.access_loggers.stdout
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+              log_format:
+                json_format:
+                  timestamp: "%START_TIME%"
+                  method: "%REQ(:METHOD)%"
+                  path: "%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%"
+                  authority: "%REQ(:AUTHORITY)%"
+                  response_code: "%RESPONSE_CODE%"
+                  duration_ms: "%DURATION%"
+                  downstream_remote_address: "%DOWNSTREAM_REMOTE_ADDRESS%"
+                  upstream_host: "%UPSTREAM_HOST%"
+                  bytes_received: "%BYTES_RECEIVED%"
+                  bytes_sent: "%BYTES_SENT%"
+  clusters:
+  - name: egress_cluster
+    connect_timeout: 5s
+    lb_policy: CLUSTER_PROVIDED
+    cluster_type:
+      name: envoy.clusters.dynamic_forward_proxy
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.clusters.dynamic_forward_proxy.v3.ClusterConfig
+        dns_cache_config:
+          name: egress_cache
+          dns_lookup_family: V4_ONLY
+admin:
+  access_log_path: /tmp/envoy_admin.log
+  address:
+    socket_address:
+      address: 0.0.0.0
+      port_value: 9901
+"#;
+    fs::write(path, body).map_err(|err| err.to_string())
+}
+
+fn http_listener_block(service_name: &str, app_name: &str, port: u16) -> String {
+    format!(
+        "  - name: {service_name}_listener_{port}\n    address:\n      socket_address:\n        address: 0.0.0.0\n        port_value: {port}\n    filter_chains:\n    - filters:\n      - name: envoy.filters.network.http_connection_manager\n        typed_config:\n          \"@type\": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager\n          stat_prefix: ingress_http_{port}\n          codec_type: AUTO\n          route_config:\n            name: route_{port}\n            virtual_hosts:\n            - name: backend\n              domains: [\"*\"]\n              routes:\n              - match:\n                  prefix: \"/\"\n                route:\n                  cluster: {app_name}_{port}\n          http_filters:\n          - name: envoy.filters.http.router\n          access_log:\n          - name: envoy.access_loggers.stdout\n            typed_config:\n              \"@type\": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog\n              log_format:\n                json_format:\n                  timestamp: \"%START_TIME%\"\n                  method: \"%REQ(:METHOD)%\"\n                  path: \"%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%\"\n                  protocol: \"%PROTOCOL%\"\n                  response_code: \"%RESPONSE_CODE%\"\n                  duration_ms: \"%DURATION%\"\n                  downstream_remote_address: \"%DOWNSTREAM_REMOTE_ADDRESS%\"\n                  upstream_host: \"%UPSTREAM_HOST%\"\n                  bytes_received: \"%BYTES_RECEIVED%\"\n                  bytes_sent: \"%BYTES_SENT%\"\n                  request_id: \"%REQ(X-REQUEST-ID)%\"\n",
+    )
+}
+
+fn tcp_listener_block(service_name: &str, app_name: &str, port: u16) -> String {
+    format!(
+        "  - name: {service_name}_tcp_listener_{port}\n    address:\n      socket_address:\n        address: 0.0.0.0\n        port_value: {port}\n    filter_chains:\n    - filters:\n      - name: envoy.filters.network.tcp_proxy\n        typed_config:\n          \"@type\": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy\n          stat_prefix: tcp_{port}\n          cluster: {app_name}_{port}\n          access_log:\n          - name: envoy.access_loggers.stdout\n            typed_config:\n              \"@type\": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog\n              log_format:\n                json_format:\n                  timestamp: \"%START_TIME%\"\n                  duration_ms: \"%DURATION%\"\n                  downstream_remote_address: \"%DOWNSTREAM_REMOTE_ADDRESS%\"\n                  upstream_host: \"%UPSTREAM_HOST%\"\n                  bytes_received: \"%BYTES_RECEIVED%\"\n                  bytes_sent: \"%BYTES_SENT%\"\n",
+    )
+}
+
+fn cluster_block(app_name: &str, port: u16) -> String {
+    format!(
+        "  - name: {app_name}_{port}\n    connect_timeout: 2s\n    type: STRICT_DNS\n    lb_policy: ROUND_ROBIN\n    load_assignment:\n      cluster_name: {app_name}_{port}\n      endpoints:\n      - lb_endpoints:\n        - endpoint:\n            address:\n              socket_address:\n                address: {app_name}\n                port_value: {port}\n",
+    )
+}

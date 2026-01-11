@@ -1,35 +1,31 @@
 use serde::Serialize;
 
+pub mod traffic;
+
 #[derive(Clone, Serialize)]
-pub(crate) struct ServiceInfo {
-    pub(crate) name: String,
-    pub(crate) endpoints: Vec<String>,
-    pub(crate) endpoint: Option<String>,
-    pub(crate) exposed: bool,
+pub struct ServiceInfo {
+    pub name: String,
+    pub endpoints: Vec<String>,
+    pub endpoint: Option<String>,
+    pub exposed: bool,
 }
 
 #[derive(Clone, Serialize)]
-pub(crate) struct LogEvent {
-    pub(crate) seq: u64,
-    pub(crate) service: String,
-    pub(crate) container_ts: Option<String>,
-    pub(crate) line: String,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Provider {
-    PodmanCompose,
-    Other,
+pub struct LogEvent {
+    pub seq: u64,
+    pub service: String,
+    pub container_ts: Option<String>,
+    pub line: String,
 }
 
 #[derive(Clone, Copy)]
-pub(crate) enum Scope {
+pub enum Scope {
     Running,
     All,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EngineKind {
+pub enum EngineKind {
     Podman,
     Docker,
 }

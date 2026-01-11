@@ -6,7 +6,7 @@ fn collect_events(lines: &[&str]) -> Vec<AggregatedEvent> {
     let mut now = Instant::now();
     let mut output = Vec::new();
     for line in lines {
-        now = now + Duration::from_millis(10);
+        now += Duration::from_millis(10);
         output.extend(agg.push_line(line, now));
     }
     if let Some(last) = agg.flush() {
@@ -16,7 +16,24 @@ fn collect_events(lines: &[&str]) -> Vec<AggregatedEvent> {
 }
 
 fn split_outer(line: &str) -> (&str, &str) {
-    line.split_once(' ').expect("outer timestamp")
+    let split = line.split_once(' ');
+    assert!(split.is_some(), "outer timestamp");
+    split.unwrap_or(("", ""))
+}
+
+fn line_at<'a>(lines: &'a [&'a str], idx: usize) -> &'a str {
+    let line = lines.get(idx).copied();
+    assert!(line.is_some(), "missing line at index {idx}");
+    line.unwrap_or("")
+}
+
+fn assert_event(events: &[AggregatedEvent], idx: usize, line: &str, ts: Option<&str>) {
+    let event = events.get(idx);
+    assert!(event.is_some(), "missing event at index {idx}");
+    if let Some(event) = event {
+        assert_eq!(event.line, line);
+        assert_eq!(event.container_ts.as_deref(), ts);
+    }
 }
 
 #[test]
@@ -27,14 +44,12 @@ fn json_lines_are_complete_events() {
     ];
 
     let events = collect_events(&lines);
-    let (ts0, body0) = split_outer(lines[0]);
-    let (ts1, body1) = split_outer(lines[1]);
+    let (ts0, body0) = split_outer(line_at(&lines, 0));
+    let (ts1, body1) = split_outer(line_at(&lines, 1));
 
     assert_eq!(events.len(), 2);
-    assert_eq!(events[0].line, body0);
-    assert_eq!(events[0].container_ts.as_deref(), Some(ts0));
-    assert_eq!(events[1].line, body1);
-    assert_eq!(events[1].container_ts.as_deref(), Some(ts1));
+    assert_event(&events, 0, body0, Some(ts0));
+    assert_event(&events, 1, body1, Some(ts1));
 }
 
 #[test]
@@ -70,13 +85,13 @@ fn python_traceback_groups_until_next_start() {
     .join("\n");
 
     assert_eq!(events.len(), 2);
-    assert_eq!(events[0].line, expected_first);
-    assert_eq!(events[0].container_ts, None);
-    assert_eq!(
-        events[1].line,
-        "ERROR:    Application startup failed. Exiting."
+    assert_event(&events, 0, &expected_first, None);
+    assert_event(
+        &events,
+        1,
+        "ERROR:    Application startup failed. Exiting.",
+        None,
     );
-    assert_eq!(events[1].container_ts, None);
 }
 
 #[test]
@@ -87,14 +102,12 @@ fn logfmt_lines_stay_separate() {
     ];
 
     let events = collect_events(&lines);
-    let (ts0, body0) = split_outer(lines[0]);
-    let (ts1, body1) = split_outer(lines[1]);
+    let (ts0, body0) = split_outer(line_at(&lines, 0));
+    let (ts1, body1) = split_outer(line_at(&lines, 1));
 
     assert_eq!(events.len(), 2);
-    assert_eq!(events[0].line, body0);
-    assert_eq!(events[0].container_ts.as_deref(), Some(ts0));
-    assert_eq!(events[1].line, body1);
-    assert_eq!(events[1].container_ts.as_deref(), Some(ts1));
+    assert_event(&events, 0, body0, Some(ts0));
+    assert_event(&events, 1, body1, Some(ts1));
 }
 
 #[test]
@@ -121,8 +134,7 @@ fn banner_block_attaches_to_previous_line() {
     .join("\n");
 
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0].line, expected);
-    assert_eq!(events[0].container_ts, None);
+    assert_event(&events, 0, &expected, None);
 }
 
 #[test]
@@ -144,11 +156,7 @@ fn docker_timestamp_prefix_does_not_split_traceback() {
     ]
     .join("\n");
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0].line, expected);
-    assert_eq!(
-        events[0].container_ts.as_deref(),
-        Some("2026-01-08T00:32:33-03:00")
-    );
+    assert_event(&events, 0, &expected, Some("2026-01-08T00:32:33-03:00"));
 }
 
 #[test]
@@ -173,11 +181,7 @@ fn docker_timestamp_only_line_keeps_blank_line() {
     .join("\n");
 
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0].line, expected);
-    assert_eq!(
-        events[0].container_ts.as_deref(),
-        Some("2026-01-08T11:11:38-03:00")
-    );
+    assert_event(&events, 0, &expected, Some("2026-01-08T11:11:38-03:00"));
 }
 
 #[test]
@@ -199,11 +203,7 @@ fn docker_timestamp_is_metadata_only() {
     ]
     .join("\n");
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0].line, expected);
-    assert_eq!(
-        events[0].container_ts.as_deref(),
-        Some("2026-01-08T00:32:33-03:00")
-    );
+    assert_event(&events, 0, &expected, Some("2026-01-08T00:32:33-03:00"));
 }
 
 #[test]
@@ -224,11 +224,7 @@ fn docker_timestamp_gap_overrides_arrival_gap() {
     let expected = ["ERROR first line", "second line"].join("\n");
 
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0].line, expected);
-    assert_eq!(
-        events[0].container_ts.as_deref(),
-        Some("2026-01-08T00:32:33-03:00")
-    );
+    assert_event(&events, 0, &expected, Some("2026-01-08T00:32:33-03:00"));
 }
 
 #[test]
@@ -255,10 +251,7 @@ fn bracketed_timestamp_level_groups_following_lines() {
     .join("\n");
 
     assert_eq!(events.len(), 3);
-    assert_eq!(events[0].line, expected_first);
-    assert_eq!(events[0].container_ts, None);
-    assert_eq!(events[1].line, lines[5]);
-    assert_eq!(events[1].container_ts, None);
-    assert_eq!(events[2].line, lines[6]);
-    assert_eq!(events[2].container_ts, None);
+    assert_event(&events, 0, &expected_first, None);
+    assert_event(&events, 1, line_at(&lines, 5), None);
+    assert_event(&events, 2, line_at(&lines, 6), None);
 }

@@ -5,10 +5,11 @@ stream-friendly log output while keeping Compose's CLI behavior.
 
 ## Features
 
-- Works with `docker compose`, `docker-compose`, `podman compose`, and `podman-compose`
+- Works with `podman compose` and `docker compose`
 - Opens a local log UI on `up` (can be disabled)
 - Colored, prefixed service logs with optional timestamps
 - Adds `--build` on `up` and `--remove-orphans` on `up`/`down` unless explicitly disabled
+- Optional traffic view with per-endpoint summaries via Envoy sidecar proxies
 
 ## Install
 
@@ -64,6 +65,7 @@ The tool mirrors Compose subcommands. A compose file is required via `-f/--file`
 ```bash
 sanelens --version
 sanelens -f docker-compose.yml up
+sanelens --no-traffic -f docker-compose.yml up
 sanelens -f docker-compose.yml up -d
 sanelens -f docker-compose.yml up --no-cache
 sanelens -f docker-compose.yml up --force-recreate
@@ -86,6 +88,9 @@ Passing `--force-recreate` to `up` forces containers to be recreated, and can be
 - `COMPOSE_LOG_TIMESTAMPS`: set to `0/false/no` to disable log timestamps
 - `COMPOSE_DEFAULT_BUILD`: set to `0/false/no` to skip auto `--build` on `up`
 - `COMPOSE_DEFAULT_REMOVE_ORPHANS`: set to `0/false/no` to skip auto `--remove-orphans` on `up`/`down`
+- `SANELENS_TRAFFIC`: set to `0/false/no` to disable traffic capture (enabled by default)
+- `SANELENS_EGRESS_PROXY`: set to `1/true/yes` to enable best-effort egress capture via HTTP(S) proxy
+- `SANELENS_ENVOY_IMAGE`: override the Envoy image used for proxies
 
 ## Development
 

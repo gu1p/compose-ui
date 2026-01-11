@@ -57,16 +57,6 @@ export function mockApiPlugin(): Plugin {
   const collections = ["spring", "studio", "sport", "commuter"];
 
   type SseClient = { write: (chunk: string) => void };
-  type RequestLike = {
-    url?: string;
-    on: (event: "close", handler: () => void) => void;
-  };
-  type ResponseLike = {
-    statusCode: number;
-    setHeader: (name: string, value: string) => void;
-    end: (body?: string) => void;
-    write: (chunk: string) => void;
-  };
 
   const history: LogEvent[] = [];
   const clients = new Set<SseClient>();
@@ -220,26 +210,24 @@ export function mockApiPlugin(): Plugin {
       }
 
       const handleMock: Connect.NextHandleFunction = (req, res, next) => {
-        const request = req as RequestLike;
-        const response = res as ResponseLike;
-        const path = request.url?.split("?")[0] ?? "";
+        const path = req.url?.split("?")[0] ?? "";
         if (path === "/api/services") {
-          response.statusCode = 200;
-          response.setHeader("Content-Type", "application/json");
-          response.setHeader("Cache-Control", "no-cache");
-          response.end(JSON.stringify({ services }));
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "application/json");
+          res.setHeader("Cache-Control", "no-cache");
+          res.end(JSON.stringify({ services }));
           return;
         }
 
         if (path === "/events") {
-          response.statusCode = 200;
-          response.setHeader("Content-Type", "text/event-stream");
-          response.setHeader("Cache-Control", "no-cache");
-          response.setHeader("Connection", "keep-alive");
-          response.write(`event: history\ndata: ${JSON.stringify(history)}\n\n`);
-          clients.add(response);
-          request.on("close", () => {
-            clients.delete(response);
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "text/event-stream");
+          res.setHeader("Cache-Control", "no-cache");
+          res.setHeader("Connection", "keep-alive");
+          res.write(`event: history\ndata: ${JSON.stringify(history)}\n\n`);
+          clients.add(res as SseClient);
+          req.on("close", () => {
+            clients.delete(res as SseClient);
           });
           return;
         }

@@ -1,8 +1,9 @@
-pub(crate) mod args;
-pub(crate) mod constants;
-pub(crate) mod logging;
-pub(crate) mod multiline;
-pub(crate) mod services;
+pub mod args;
+pub mod constants;
+pub mod logging;
+pub mod multiline;
+pub mod services;
+pub mod traffic;
 
 #[cfg(test)]
 mod logging_tests;

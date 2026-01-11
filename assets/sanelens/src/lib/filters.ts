@@ -26,7 +26,7 @@ export function decodeToken(value: string): string {
   const sanitized = value.replace(/\+/g, " ");
   try {
     return decodeURIComponent(sanitized);
-  } catch {
+  } catch (error) {
     return sanitized;
   }
 }

@@ -2,28 +2,28 @@ use std::time::{Duration, Instant};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Decision {
+pub enum Decision {
     StartNew,
     NoOpinion,
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Ruling {
-    pub(crate) decision: Decision,
-    pub(crate) complete: bool,
+pub struct Ruling {
+    pub decision: Decision,
+    pub complete: bool,
 }
 
-pub(crate) struct AggregatedEvent {
-    pub(crate) line: String,
-    pub(crate) container_ts: Option<String>,
+pub struct AggregatedEvent {
+    pub line: String,
+    pub container_ts: Option<String>,
 }
 
-pub(crate) struct LineView<'a> {
-    pub(crate) content: &'a str,
+pub struct LineView<'a> {
+    pub content: &'a str,
 }
 
 impl<'a> LineView<'a> {
-    pub(crate) fn new(content: &'a str) -> Self {
+    pub const fn new(content: &'a str) -> Self {
         Self { content }
     }
 }
@@ -34,7 +34,7 @@ struct Vote {
 }
 
 impl Vote {
-    fn start(complete: bool) -> Self {
+    const fn start(complete: bool) -> Self {
         Self {
             decision: Decision::StartNew,
             complete,
@@ -46,18 +46,18 @@ trait Classifier: Send + Sync {
     fn classify(&self, view: &LineView) -> Option<Vote>;
 }
 
-pub(crate) struct Router {
+pub struct Router {
     start_classifiers: Vec<Box<dyn Classifier>>,
 }
 
 impl Router {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             start_classifiers: vec![Box::new(JsonClassifier), Box::new(TokenSignalClassifier)],
         }
     }
 
-    pub(crate) fn classify(&self, view: &LineView) -> Ruling {
+    pub fn classify(&self, view: &LineView) -> Ruling {
         for classifier in &self.start_classifiers {
             if let Some(vote) = classifier.classify(view) {
                 return Ruling {
@@ -73,7 +73,7 @@ impl Router {
     }
 }
 
-pub(crate) struct MultilineAggregator {
+pub struct MultilineAggregator {
     router: Router,
     buffer: String,
     last_ingest: Option<Instant>,
@@ -83,7 +83,7 @@ pub(crate) struct MultilineAggregator {
 }
 
 impl MultilineAggregator {
-    pub(crate) fn new(max_gap: Duration) -> Self {
+    pub fn new(max_gap: Duration) -> Self {
         Self {
             router: Router::new(),
             buffer: String::new(),
@@ -94,17 +94,17 @@ impl MultilineAggregator {
         }
     }
 
-    pub(crate) fn push_line(&mut self, line: &str, now: Instant) -> Vec<AggregatedEvent> {
+    pub fn push_line(&mut self, line: &str, now: Instant) -> Vec<AggregatedEvent> {
         let mut flushed = Vec::new();
         let (container_ts, content, current_outer_ts) = extract_outer_timestamp(line);
         let arrival_gap_exceeded = self
             .last_ingest
-            .map(|last| now.duration_since(last) > self.max_gap)
-            .unwrap_or(false);
+            .is_some_and(|last| now.duration_since(last) > self.max_gap);
         let gap_exceeded = match (self.last_outer_ts, current_outer_ts) {
             (Some(prev), Some(curr)) if curr >= prev => {
                 let delta_ms = curr - prev;
-                delta_ms > self.max_gap.as_millis() as i64
+                let max_gap_ms = i64::try_from(self.max_gap.as_millis()).unwrap_or(i64::MAX);
+                delta_ms > max_gap_ms
             }
             _ => arrival_gap_exceeded,
         };
@@ -114,14 +114,10 @@ impl MultilineAggregator {
         let is_start = ruling.decision == Decision::StartNew;
 
         if gap_exceeded || is_start {
-            if let Some(event) = self.take_event() {
-                flushed.push(event);
-            }
+            self.flush_current(&mut flushed);
             self.start_new_entry(content, container_ts);
             if ruling.complete {
-                if let Some(event) = self.take_event() {
-                    flushed.push(event);
-                }
+                self.flush_current(&mut flushed);
             }
             self.last_ingest = Some(now);
             if let Some(ts) = current_outer_ts {
@@ -142,7 +138,7 @@ impl MultilineAggregator {
         flushed
     }
 
-    pub(crate) fn flush(&mut self) -> Option<AggregatedEvent> {
+    pub fn flush(&mut self) -> Option<AggregatedEvent> {
         self.take_event()
     }
 
@@ -157,8 +153,14 @@ impl MultilineAggregator {
         }
     }
 
+    fn flush_current(&mut self, flushed: &mut Vec<AggregatedEvent>) {
+        if let Some(event) = self.take_event() {
+            flushed.push(event);
+        }
+    }
+
     fn start_new_entry(&mut self, line: &str, container_ts: Option<&str>) {
-        self.current_container_ts = container_ts.map(|value| value.to_string());
+        self.current_container_ts = container_ts.map(ToString::to_string);
         self.buffer.push_str(line);
     }
 
@@ -206,14 +208,14 @@ fn extract_json_candidate(value: &str) -> Option<&str> {
 }
 
 fn extract_outer_timestamp(line: &str) -> (Option<&str>, &str, Option<i64>) {
-    if let Some(split) = line.find(|ch: char| ch.is_whitespace()) {
-        let ts = &line[..split];
+    let mut parts = line.splitn(2, char::is_whitespace);
+    let ts = parts.next().unwrap_or("");
+    if let Some(rest) = parts.next() {
         if let Some(parsed) = parse_rfc3339_to_epoch_millis(ts) {
-            return (Some(ts), &line[split + 1..], Some(parsed));
+            return (Some(ts), rest, Some(parsed));
         }
         return (None, line, None);
     }
-
     if let Some(parsed) = parse_rfc3339_to_epoch_millis(line) {
         return (Some(line), "", Some(parsed));
     }
@@ -228,10 +230,14 @@ fn has_start_signal(line: &str) -> bool {
     if tokens.iter().any(|token| token_contains_datetime(token)) {
         return true;
     }
-    for idx in 0..tokens.len().saturating_sub(1) {
-        if token_contains_date(tokens[idx]) && token_contains_time(tokens[idx + 1]) {
-            return true;
+    let mut previous = None;
+    for token in &tokens {
+        if let Some(prev) = previous {
+            if token_contains_date(prev) && token_contains_time(token) {
+                return true;
+            }
         }
+        previous = Some(*token);
     }
     tokens.iter().any(|token| token_has_severity(token))
 }
@@ -239,19 +245,22 @@ fn has_start_signal(line: &str) -> bool {
 fn token_has_severity(token: &str) -> bool {
     let bytes = token.as_bytes();
     let mut idx = 0;
-    while idx < bytes.len() {
-        while idx < bytes.len() && !bytes[idx].is_ascii_alphabetic() {
+    while byte_at(bytes, idx).is_some() {
+        while let Some(byte) = byte_at(bytes, idx) {
+            if byte.is_ascii_alphabetic() {
+                break;
+            }
             idx += 1;
         }
         let start = idx;
-        while idx < bytes.len() && bytes[idx].is_ascii_alphabetic() {
+        while let Some(byte) = byte_at(bytes, idx) {
+            if !byte.is_ascii_alphabetic() {
+                break;
+            }
             idx += 1;
         }
-        if start < idx {
-            let word = &token[start..idx];
-            if is_level(word) {
-                return true;
-            }
+        if start < idx && token.get(start..idx).is_some_and(is_level) {
+            return true;
         }
     }
     false
@@ -262,10 +271,10 @@ fn token_contains_datetime(token: &str) -> bool {
     let mut idx = 0;
     while idx + 10 < bytes.len() {
         if let Some(end) = match_date_at(bytes, idx) {
-            if end < bytes.len() && matches!(bytes[end], b'T' | b't') {
-                if match_time_at(bytes, end + 1).is_some() {
-                    return true;
-                }
+            if matches!(byte_at(bytes, end), Some(b'T' | b't'))
+                && match_time_at(bytes, end + 1).is_some()
+            {
+                return true;
             }
         }
         idx += 1;
@@ -308,14 +317,14 @@ fn match_date_at(bytes: &[u8], idx: usize) -> Option<usize> {
     {
         return None;
     }
-    let sep = bytes[idx + 4];
+    let sep = byte_at(bytes, idx + 4)?;
     if sep != b'-' && sep != b'/' {
         return None;
     }
     if !is_digit(bytes, idx + 5) || !is_digit(bytes, idx + 6) {
         return None;
     }
-    let sep2 = bytes[idx + 7];
+    let sep2 = byte_at(bytes, idx + 7)?;
     if sep2 != b'-' && sep2 != b'/' {
         return None;
     }
@@ -331,34 +340,34 @@ fn match_time_at(bytes: &[u8], idx: usize) -> Option<usize> {
     }
     if !is_digit(bytes, idx)
         || !is_digit(bytes, idx + 1)
-        || bytes[idx + 2] != b':'
+        || byte_at(bytes, idx + 2)? != b':'
         || !is_digit(bytes, idx + 3)
         || !is_digit(bytes, idx + 4)
-        || bytes[idx + 5] != b':'
+        || byte_at(bytes, idx + 5)? != b':'
         || !is_digit(bytes, idx + 6)
         || !is_digit(bytes, idx + 7)
     {
         return None;
     }
     let mut end = idx + 8;
-    if end < bytes.len() && matches!(bytes[end], b'.' | b',') {
+    if matches!(byte_at(bytes, end), Some(b'.' | b',')) {
         end += 1;
         let start = end;
-        while end < bytes.len() && is_digit(bytes, end) {
+        while byte_at(bytes, end).is_some_and(|byte| byte.is_ascii_digit()) {
             end += 1;
         }
         if start == end {
             return None;
         }
     }
-    if end < bytes.len() {
-        match bytes[end] {
+    if let Some(byte) = byte_at(bytes, end) {
+        match byte {
             b'Z' | b'z' => end += 1,
             b'+' | b'-' => {
                 if end + 5 < bytes.len()
                     && is_digit(bytes, end + 1)
                     && is_digit(bytes, end + 2)
-                    && bytes[end + 3] == b':'
+                    && byte_at(bytes, end + 3)? == b':'
                     && is_digit(bytes, end + 4)
                     && is_digit(bytes, end + 5)
                 {
@@ -372,7 +381,11 @@ fn match_time_at(bytes: &[u8], idx: usize) -> Option<usize> {
 }
 
 fn is_digit(bytes: &[u8], idx: usize) -> bool {
-    bytes.get(idx).map(|b| b.is_ascii_digit()).unwrap_or(false)
+    byte_at(bytes, idx).is_some_and(|byte| byte.is_ascii_digit())
+}
+
+fn byte_at(bytes: &[u8], idx: usize) -> Option<u8> {
+    bytes.get(idx).copied()
 }
 
 fn parse_rfc3339_to_epoch_millis(value: &str) -> Option<i64> {

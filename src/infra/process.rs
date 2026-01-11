@@ -5,7 +5,7 @@ use std::process::{Child, Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-pub(crate) fn command_exists(cmd: &str) -> bool {
+pub fn command_exists(cmd: &str) -> bool {
     if cmd.contains(std::path::MAIN_SEPARATOR) {
         return Path::new(cmd).is_file();
     }
@@ -20,22 +20,25 @@ pub(crate) fn command_exists(cmd: &str) -> bool {
     false
 }
 
-pub(crate) fn run_status(cmd: &[String]) -> bool {
+pub fn run_status(cmd: &[String]) -> bool {
     run_output(cmd)
         .map(|output| output.status.success())
         .unwrap_or(false)
 }
 
-pub(crate) fn run_output(cmd: &[String]) -> io::Result<Output> {
-    let mut command = Command::new(&cmd[0]);
+pub fn run_output(cmd: &[String]) -> io::Result<Output> {
+    let Some((program, args)) = cmd.split_first() else {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty command"));
+    };
+    let mut command = Command::new(program);
     command
-        .args(&cmd[1..])
+        .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     command.output()
 }
 
-pub(crate) fn spawn_process_group(cmd: &mut Command) -> io::Result<Child> {
+pub fn spawn_process_group(cmd: &mut Command) -> io::Result<Child> {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -51,13 +54,15 @@ pub(crate) fn spawn_process_group(cmd: &mut Command) -> io::Result<Child> {
     cmd.spawn()
 }
 
-pub(crate) fn terminate_process(child: &mut Child, timeout: Duration) {
+pub fn terminate_process(child: &mut Child, timeout: Duration) {
     if child.try_wait().ok().flatten().is_some() {
         return;
     }
     #[cfg(unix)]
     {
-        let pid = child.id() as i32;
+        let Ok(pid) = i32::try_from(child.id()) else {
+            return;
+        };
         unsafe {
             libc::killpg(pid, libc::SIGTERM);
         }
@@ -71,7 +76,9 @@ pub(crate) fn terminate_process(child: &mut Child, timeout: Duration) {
     }
     #[cfg(unix)]
     unsafe {
-        libc::killpg(child.id() as i32, libc::SIGKILL);
+        if let Ok(pid) = i32::try_from(child.id()) {
+            libc::killpg(pid, libc::SIGKILL);
+        }
     }
     #[cfg(not(unix))]
     {
@@ -80,7 +87,7 @@ pub(crate) fn terminate_process(child: &mut Child, timeout: Duration) {
     let _ = wait_child_timeout(child, Duration::from_secs(1));
 }
 
-pub(crate) fn wait_child_timeout(child: &mut Child, timeout: Duration) -> bool {
+pub fn wait_child_timeout(child: &mut Child, timeout: Duration) -> bool {
     let start = Instant::now();
     loop {
         if child.try_wait().ok().flatten().is_some() {
@@ -93,14 +100,15 @@ pub(crate) fn wait_child_timeout(child: &mut Child, timeout: Duration) -> bool {
     }
 }
 
-pub(crate) fn pid_alive(pid: i32) -> bool {
+pub fn pid_alive(pid: i32) -> bool {
     #[cfg(unix)]
     unsafe {
         if libc::kill(pid, 0) == 0 {
-            return true;
+            true
+        } else {
+            let err = io::Error::last_os_error();
+            err.raw_os_error() == Some(libc::EPERM)
         }
-        let err = io::Error::last_os_error();
-        return err.raw_os_error() == Some(libc::EPERM);
     }
     #[cfg(not(unix))]
     {

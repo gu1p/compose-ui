@@ -6,13 +6,20 @@
   import ServicesPanel from "./components/ServicesPanel.svelte";
   import SplitLayout from "./components/SplitLayout.svelte";
   import TopBar from "./components/TopBar.svelte";
+  import TrafficPanel from "./components/TrafficPanel.svelte";
   import {
     HISTORY_LIMIT,
     MAX_LINES_PER_PANEL,
     URL_SYNC_DELAY,
   } from "./lib/constants";
   import { buildPanelMeta, entryMatchesPanel } from "./lib/filters";
-  import type { LogEvent, PanelConfig, PanelState, ServiceInfo } from "./lib/types";
+  import type {
+    LogEvent,
+    PanelConfig,
+    PanelState,
+    ServiceInfo,
+    TrafficEdge,
+  } from "./lib/types";
   import { buildSearchString, readStateFromUrl, serializePanelsConfig } from "./lib/url-state";
 
   type AppState = {
@@ -28,6 +35,11 @@
     activePanelId: null,
     history: [],
   });
+
+  let trafficEdges: TrafficEdge[] = $state([]);
+  let trafficError: string | null = $state(null);
+  let trafficStream: EventSource | null = null;
+  const trafficMap = new Map<string, TrafficEdge>();
 
   let panelCounter = 0;
   let pendingUrlSync: ReturnType<typeof setTimeout> | null = null;
@@ -240,6 +252,35 @@
     });
   }
 
+  function trafficKey(edge: TrafficEdge) {
+    return JSON.stringify(edge.key);
+  }
+
+  function updateTrafficEdges() {
+    const next = Array.from(trafficMap.values());
+    next.sort((a, b) => {
+      if (a.stats.count !== b.stats.count) {
+        return b.stats.count - a.stats.count;
+      }
+      return b.last_seen_ms - a.last_seen_ms;
+    });
+    trafficEdges = next.slice(0, 200);
+  }
+
+  function handleTrafficSnapshot(edges: TrafficEdge[]) {
+    trafficMap.clear();
+    edges.forEach((edge) => {
+      trafficMap.set(trafficKey(edge), edge);
+    });
+    trafficError = null;
+    updateTrafficEdges();
+  }
+
+  function handleTrafficUpdate(edge: TrafficEdge) {
+    trafficMap.set(trafficKey(edge), edge);
+    updateTrafficEdges();
+  }
+
   function startEventStream() {
     eventStream = new EventSource("/events");
     eventStream.addEventListener("history", (event) => {
@@ -263,6 +304,35 @@
     };
   }
 
+  function startTrafficStream() {
+    trafficStream = new EventSource("/traffic");
+    trafficStream.addEventListener("snapshot", (event) => {
+      try {
+        const edges = JSON.parse((event as MessageEvent).data);
+        if (Array.isArray(edges)) {
+          handleTrafficSnapshot(edges as TrafficEdge[]);
+        }
+      } catch (error) {
+        console.error(error);
+      }
+    });
+    trafficStream.onmessage = (event) => {
+      try {
+        const edge = JSON.parse(event.data) as TrafficEdge;
+        if (edge?.key) {
+          handleTrafficUpdate(edge);
+        }
+      } catch (error) {
+        console.error(error);
+      }
+    };
+    trafficStream.onerror = () => {
+      if (!trafficError) {
+        trafficError = "Traffic capture is not enabled for this run.";
+      }
+    };
+  }
+
   async function init() {
     try {
       const response = await fetch("/api/services");
@@ -272,6 +342,7 @@
         createPanel();
       }
       startEventStream();
+      startTrafficStream();
     } catch (error) {
       loadError = "Failed to load services.";
       console.error(error);
@@ -282,6 +353,7 @@
     init();
     return () => {
       eventStream?.close();
+      trafficStream?.close();
     };
   });
 </script>
@@ -296,17 +368,22 @@
       <ServicesPanel services={appState.services} error={loadError} onSelect={handleServiceSelect} />
     {/snippet}
     {#snippet content()}
-      <PanelGrid
-        panels={appState.panels}
-        services={appState.services}
-        activePanelId={appState.activePanelId}
-        onActivate={setActivePanel}
-        onToggleFollow={toggleFollow}
-        onOpenFilters={openFilterDrawer}
-        onClose={closePanel}
-        onToggleService={toggleService}
-        onSelectAll={setAllServices}
-      />
+      <div class="flex h-full min-h-0 flex-col gap-4">
+        <TrafficPanel edges={trafficEdges} error={trafficError} />
+        <div class="min-h-0 flex-1">
+          <PanelGrid
+            panels={appState.panels}
+            services={appState.services}
+            activePanelId={appState.activePanelId}
+            onActivate={setActivePanel}
+            onToggleFollow={toggleFollow}
+            onOpenFilters={openFilterDrawer}
+            onClose={closePanel}
+            onToggleService={toggleService}
+            onSelectAll={setAllServices}
+          />
+        </div>
+      </div>
     {/snippet}
   </SplitLayout>
 </LayoutShell>

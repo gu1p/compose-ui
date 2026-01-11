@@ -1,13 +1,13 @@
 use std::thread;
 use std::time::Duration;
 
-use crate::app::runner::ComposeRunner;
+use crate::app::runner::{ComposeRunner, ComposeRunnerConfig};
 use crate::domain::EngineKind;
-use crate::infra::compose::{detect_compose_cmd, detect_provider};
+use crate::infra::compose::detect_compose_cmd;
 use crate::infra::engine::Engine;
 use crate::infra::process::{command_exists, pid_alive};
 
-pub(crate) fn run_watchdog(
+pub fn run_watchdog(
     parent_pid: i32,
     project_name: &str,
     compose_file: &str,
@@ -25,19 +25,23 @@ pub(crate) fn run_watchdog(
             EngineKind::Podman,
         )
     } else {
-        let selection = detect_compose_cmd(None);
+        let selection = match detect_compose_cmd(None) {
+            Ok(selection) => selection,
+            Err(err) => {
+                eprintln!("{err}");
+                return;
+            }
+        };
         (selection.compose_cmd, selection.engine)
     };
-    let provider = detect_provider(&compose_cmd);
     let engine = Engine::new(engine_kind, &compose_cmd).with_connection(connection);
-    let mut runner = ComposeRunner::new(
+    let mut runner = ComposeRunner::new(ComposeRunnerConfig {
         compose_cmd,
-        provider,
         engine,
-        compose_file.to_string(),
-        project_name.to_string(),
-        Vec::new(),
-    );
+        compose_file: compose_file.to_string(),
+        project_name: project_name.to_string(),
+        args: Vec::new(),
+    });
     runner.set_project_args(vec!["-p".to_string(), project_name.to_string()]);
     runner.enable_cleanup();
     runner.cleanup_once();
