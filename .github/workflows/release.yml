@@ -75,9 +75,11 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: sanelens-*
           path: .
           merge-multiple: true
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/sanelens-*
+          files: sanelens-*
+          fail_on_unmatched_files: true
